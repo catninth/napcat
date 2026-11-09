@@ -5,10 +5,15 @@
 //! (egy eszköz több interfésszel jelenik meg), majd a providerek újraolvassák az állapotot,
 //! és csak a ténylegesen változott eszközök mennek a UI szálnak. Időzített olvasást csak az a
 //! provider kér, amelynek eszköze magától nem jelez, és csak amíg van csatlakoztatott eszköze.
+//!
+//! Energiatakarékosság: kikapcsolt vagy zárolt képernyőnél az időzített olvasás szünetel
+//! (úgysem látja senki), visszakapcsoláskor egy teljes frissítés jön; akkumulátoros üzemben
+//! (laptop) az időközök duplázódnak. Ezeket a UI szál jelzi a `set_power` hívással.
 
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::mem::size_of;
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
 use std::time::Instant;
@@ -30,6 +35,45 @@ pub const WM_DEVICES: u32 = WM_APP + 2;
 /// Ennyi ideig gyűjtjük az egymás utáni eszközértesítéseket egy újraolvasás előtt.
 const SETTLE_MS: u32 = 300;
 
+/// Képernyő kikapcsolva vagy zárolva: nincs időzített olvasás.
+static PAUSED: AtomicBool = AtomicBool::new(false);
+/// Akkumulátoros üzem: dupla időközök.
+static ON_BATTERY: AtomicBool = AtomicBool::new(false);
+/// Az eszközszál ébresztő eseménye (HANDLE), hogy a változás azonnal érvényesüljön.
+static WAKE: AtomicIsize = AtomicIsize::new(0);
+
+/// Hibakereső napló a %TEMP%\napcat.log fájlba, csak ha a NAPCAT_LOG környezeti változó be van állítva.
+pub fn log(msg: &str) {
+    use std::io::Write;
+    use std::sync::OnceLock;
+    use std::time::SystemTime;
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    if !*ENABLED.get_or_init(|| std::env::var_os("NAPCAT_LOG").is_some()) {
+        return;
+    }
+    let secs = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let path = std::env::temp_dir().join("napcat.log");
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(f, "{secs} {msg}");
+    }
+}
+
+/// Energiaállapot a UI száltól; csak változáskor ébreszti az eszközszálat.
+pub fn set_power(paused: bool, on_battery: bool) {
+    let pause_changed = PAUSED.swap(paused, Ordering::Relaxed) != paused;
+    let battery_changed = ON_BATTERY.swap(on_battery, Ordering::Relaxed) != on_battery;
+    let changed = pause_changed || battery_changed;
+    if changed {
+        log(&format!("energia: szünet={paused} akkumulátor={on_battery}"));
+    }
+    let wake = WAKE.load(Ordering::Relaxed);
+    if changed && wake != 0 {
+        unsafe {
+            let _ = SetEvent(HANDLE(wake as *mut c_void));
+        }
+    }
+}
+
 pub fn spawn(hwnd: HWND) -> Receiver<DeviceState> {
     let (tx, rx) = channel();
     let hwnd = hwnd.0 as isize; // a HWND nem Send
@@ -43,6 +87,7 @@ pub fn spawn(hwnd: HWND) -> Receiver<DeviceState> {
 unsafe fn run(hwnd: HWND, tx: Sender<DeviceState>) {
     let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
     let Ok(changed) = CreateEventW(None, false, false, PCWSTR::null()) else { return };
+    WAKE.store(changed.0 as isize, Ordering::Relaxed);
     let _notify = register_hid_notification(changed);
 
     let mut providers: Vec<Box<dyn Provider>> = vec![
@@ -62,7 +107,9 @@ unsafe fn run(hwnd: HWND, tx: Sender<DeviceState>) {
             if !device_change && !due.is_some_and(|d| d <= now) {
                 continue;
             }
-            for state in p.scan() {
+            let states = p.scan();
+            log(&format!("olvasás ({}): {} eszköz", if device_change { "esemény" } else { "időzített" }, states.len()));
+            for state in states {
                 if last.get(&state.id) != Some(&state) {
                     last.insert(state.id.clone(), state.clone());
                     if tx.send(state).is_err() {
@@ -71,17 +118,23 @@ unsafe fn run(hwnd: HWND, tx: Sender<DeviceState>) {
                     any = true;
                 }
             }
-            *due = p.poll_interval().map(|i| now + i);
+            let factor = if ON_BATTERY.load(Ordering::Relaxed) { 2 } else { 1 };
+            *due = p.poll_interval().map(|i| now + i * factor);
         }
         if any {
             let _ = PostMessageW(hwnd, WM_DEVICES, WPARAM(0), LPARAM(0));
         }
 
         // Egyetlen időzítő az egész apphoz: alvás a legközelebbi esedékes olvasásig vagy a
-        // következő eszközváltozásig; utána a további értesítések kivárása.
-        let timeout = due.iter().flatten().min().map_or(INFINITE, |d| {
-            d.saturating_duration_since(Instant::now()).as_millis().min(u32::MAX as u128 - 1) as u32
-        });
+        // következő eszközváltozásig (szünetben csak az utóbbira); utána a további értesítések
+        // kivárása. Minden ébresztés (eszközváltozás, energiaállapot) teljes frissítés.
+        let timeout = if PAUSED.load(Ordering::Relaxed) {
+            INFINITE
+        } else {
+            due.iter().flatten().min().map_or(INFINITE, |d| {
+                d.saturating_duration_since(Instant::now()).as_millis().min(u32::MAX as u128 - 1) as u32
+            })
+        };
         device_change = WaitForSingleObject(changed, timeout) == WAIT_OBJECT_0;
         if device_change {
             while WaitForSingleObject(changed, SETTLE_MS) == WAIT_OBJECT_0 {}

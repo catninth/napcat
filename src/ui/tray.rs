@@ -1,7 +1,7 @@
 //! Tálcaikonok (Shell_NotifyIconW): eszközönként egy, egy rejtett ablakkal, jobb klikkes menüvel
 //! és bal klikkes felugró panellel.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::mem::size_of;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -9,7 +9,10 @@ use std::sync::mpsc::Receiver;
 
 use windows::core::{w, Result, GUID, PCWSTR};
 use windows::Win32::Foundation::*;
+use windows::Win32::System::Power::{RegisterPowerSettingNotification, POWERBROADCAST_SETTING};
 use windows::Win32::System::ProcessStatus::K32EmptyWorkingSet;
+use windows::Win32::System::RemoteDesktop::{WTSRegisterSessionNotification, NOTIFY_FOR_THIS_SESSION};
+use windows::Win32::System::SystemServices::{GUID_ACDC_POWER_SOURCE, GUID_CONSOLE_DISPLAY_STATE};
 use windows::Win32::System::Threading::GetCurrentProcess;
 use windows::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
 use windows::Win32::UI::Shell::*;
@@ -239,6 +242,48 @@ impl App {
 
 thread_local! {
     static APP: RefCell<Option<App>> = const { RefCell::new(None) };
+    static POWER: Cell<Power> = const { Cell::new(Power { display_off: false, locked: false, on_battery: false }) };
+}
+
+/// A képernyő, a munkamenet és az áramforrás állapota (Windows értesítésekből).
+#[derive(Clone, Copy)]
+struct Power {
+    display_off: bool,
+    locked: bool,
+    on_battery: bool,
+}
+
+// WM_WTSSESSION_CHANGE események.
+const WTS_SESSION_LOCK: usize = 0x7;
+const WTS_SESSION_UNLOCK: usize = 0x8;
+
+fn update_power(f: impl FnOnce(&mut Power)) {
+    let mut p = POWER.get();
+    f(&mut p);
+    POWER.set(p);
+    worker::set_power(p.display_off || p.locked, p.on_battery);
+}
+
+/// Értesítés képernyő be/ki/halványításról és az áramforrásról (hálózat / akkumulátor);
+/// regisztráláskor a Windows azonnal elküldi a jelenlegi állapotot is.
+unsafe fn register_power_notifications(hwnd: HWND) {
+    for guid in [GUID_CONSOLE_DISPLAY_STATE, GUID_ACDC_POWER_SOURCE] {
+        let _ = RegisterPowerSettingNotification(HANDLE(hwnd.0), &guid, DEVICE_NOTIFY_WINDOW_HANDLE);
+    }
+    let _ = WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION);
+}
+
+unsafe fn on_power_setting(lparam: LPARAM) {
+    let setting = &*(lparam.0 as *const POWERBROADCAST_SETTING);
+    if setting.DataLength < 4 {
+        return;
+    }
+    let value = u32::from_le_bytes(std::slice::from_raw_parts(setting.Data.as_ptr(), 4).try_into().unwrap());
+    if setting.PowerSetting == GUID_CONSOLE_DISPLAY_STATE {
+        update_power(|p| p.display_off = value == 0); // 0 ki, 1 be, 2 halványítva
+    } else if setting.PowerSetting == GUID_ACDC_POWER_SOURCE {
+        update_power(|p| p.on_battery = value != 0); // 0 hálózat, 1 akkumulátor, 2 UPS
+    }
 }
 
 pub unsafe fn run(hinst: HINSTANCE) -> Result<()> {
@@ -257,6 +302,7 @@ pub unsafe fn run(hinst: HINSTANCE) -> Result<()> {
         next_uid: PLACEHOLDER_UID + 1,
     }));
     with_app(|app| app.sync(hwnd));
+    register_power_notifications(hwnd);
 
     let mut msg = MSG::default();
     while GetMessageW(&mut msg, None, 0, 0).as_bool() {
@@ -479,6 +525,20 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             }
             WM_DEVICES => {
                 on_devices(hwnd);
+                LRESULT(0)
+            }
+            WM_POWERBROADCAST => {
+                if wparam.0 as u32 == PBT_POWERSETTINGCHANGE {
+                    on_power_setting(lparam);
+                }
+                LRESULT(1)
+            }
+            WM_WTSSESSION_CHANGE => {
+                match wparam.0 {
+                    WTS_SESSION_LOCK => update_power(|p| p.locked = true),
+                    WTS_SESSION_UNLOCK => update_power(|p| p.locked = false),
+                    _ => {}
+                }
                 LRESULT(0)
             }
             // Téma (ImmersiveColorSet), DPI vagy kijelző változás: újrarajzolás, ha kell.
