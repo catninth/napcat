@@ -23,7 +23,7 @@ use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use super::icon_render::IconRenderer;
+use super::icon_render::{IconRenderer, Layout};
 use super::theme::Theme;
 use crate::model::{ChargeState, DeviceState};
 
@@ -183,7 +183,7 @@ unsafe fn draw_content(ctx: &ID2D1DeviceContext, renderer: &IconRenderer, device
         let y = HEADER + i as f32 * ROW;
         let ring_y = y + (ROW - RING) / 2.0;
         ctx.SetTransform(&Matrix3x2::translation(PAD + 4.0, ring_y));
-        renderer.draw(ctx, d, RING, theme, Some(theme.panel()))?;
+        renderer.draw(ctx, d, RING, theme, Layout::Ring, Some(theme.panel()))?;
         ctx.SetTransform(&Matrix3x2::identity());
 
         let x = PAD + 4.0 + RING + 14.0;
