@@ -13,14 +13,34 @@ use windows::Win32::System::Registry::*;
 pub struct Settings {
     /// A tálcán elrejtett eszközök azonosítói.
     pub hidden: Vec<String>,
-    /// Értesítés 15%-nál és 5%-nál.
+    /// Lemerülés figyelmeztetés a küszöbnél (és 5%-nál).
     pub notify_low: bool,
+    /// A lemerülés figyelmeztetés küszöbe (%), 5-30.
+    pub low_threshold: u8,
+    /// Értesítés teli töltésnél.
+    pub notify_full: bool,
+    /// Teljes képernyős alkalmazás (játék, film) közben az értesítések várnak.
+    pub quiet_fullscreen: bool,
+    /// Tálca mód: "each" (eszközönként egy ikon) vagy "one" (egy ikon a legsürgősebb eszközzel).
+    pub tray_mode: String,
     /// A tálcaikon elrendezése: "ring", "pie" vagy "bar".
     pub icon_style: String,
+    /// Az alkalmazás ablakainak témája: "system", "dark" vagy "light".
+    pub theme: String,
+    /// Kiemelő szín használata (különben semleges fehér-szürke).
+    pub use_accent: bool,
+    /// Egyéni kiemelő szín (0xRRGGBB), None: a Windows kiemelő színe.
+    pub custom_accent: Option<u32>,
+    /// A "rendben" állapotú (50% feletti) gyűrű a kiemelő színt kapja a zöld helyett.
+    pub ring_accent: bool,
+    /// Frissítési gyakoriság másodpercben (30, 60, 300); a providerek időközei ehhez arányosak.
+    pub poll_secs: u32,
     /// Frissítések: "auto" (letölt és telepít), "notify" (csak szól) vagy "off".
     pub update_mode: String,
     /// Az első indításkori tipp (ikonok kitűzése) már megjelent.
     pub pin_tip_shown: bool,
+    /// A felugró panel rács nézetben (különben lista).
+    pub flyout_grid: bool,
 }
 
 impl Default for Settings {
@@ -28,9 +48,19 @@ impl Default for Settings {
         Settings {
             hidden: Vec::new(),
             notify_low: true,
+            low_threshold: 15,
+            notify_full: true,
+            quiet_fullscreen: true,
+            tray_mode: "each".into(),
             icon_style: "ring".into(),
+            theme: "system".into(),
+            use_accent: true,
+            custom_accent: None,
+            ring_accent: false,
+            poll_secs: 60,
             update_mode: "notify".into(),
             pin_tip_shown: false,
+            flyout_grid: false,
         }
     }
 }
@@ -46,11 +76,22 @@ impl Settings {
         for line in text.lines() {
             let Some((key, value)) = line.split_once('=') else { continue };
             let value = value.trim();
+            let text = value.trim_matches('"').to_string();
             match key.trim() {
                 "notify_low" => s.notify_low = value != "false",
-                "icon_style" => s.icon_style = value.trim_matches('"').to_string(),
-                "update_mode" => s.update_mode = value.trim_matches('"').to_string(),
+                "low_threshold" => s.low_threshold = value.parse::<u8>().map_or(15, |v| v.clamp(5, 30)),
+                "notify_full" => s.notify_full = value != "false",
+                "quiet_fullscreen" => s.quiet_fullscreen = value != "false",
+                "tray_mode" => s.tray_mode = text,
+                "icon_style" => s.icon_style = text,
+                "theme" => s.theme = text,
+                "use_accent" => s.use_accent = value != "false",
+                "custom_accent" => s.custom_accent = u32::from_str_radix(text.trim_start_matches('#'), 16).ok(),
+                "ring_accent" => s.ring_accent = value == "true",
+                "poll_secs" => s.poll_secs = value.parse::<u32>().map_or(60, |v| v.clamp(30, 300)),
+                "update_mode" => s.update_mode = text,
                 "pin_tip_shown" => s.pin_tip_shown = value == "true",
+                "flyout_grid" => s.flyout_grid = value == "true",
                 "hidden" => {
                     s.hidden = value
                         .trim_start_matches('[')
@@ -72,12 +113,27 @@ impl Settings {
             let _ = std::fs::create_dir_all(dir);
         }
         let hidden: Vec<String> = self.hidden.iter().map(|h| format!("\"{}\"", h.replace('"', ""))).collect();
+        let q = |s: &str| format!("\"{}\"", s.replace('"', ""));
+        let custom = self.custom_accent.map_or("\"\"".to_string(), |c| format!("\"#{c:06X}\""));
         let text = format!(
-            "# NapCat beállítások\nnotify_low = {}\nicon_style = \"{}\"\nupdate_mode = \"{}\"\npin_tip_shown = {}\nhidden = [{}]\n",
+            "# NapCat beállítások\n\
+             notify_low = {}\nlow_threshold = {}\nnotify_full = {}\nquiet_fullscreen = {}\n\
+             tray_mode = {}\nicon_style = {}\ntheme = {}\nuse_accent = {}\ncustom_accent = {}\nring_accent = {}\n\
+             poll_secs = {}\nupdate_mode = {}\npin_tip_shown = {}\nflyout_grid = {}\nhidden = [{}]\n",
             self.notify_low,
-            self.icon_style.replace('"', ""),
-            self.update_mode.replace('"', ""),
+            self.low_threshold,
+            self.notify_full,
+            self.quiet_fullscreen,
+            q(&self.tray_mode),
+            q(&self.icon_style),
+            q(&self.theme),
+            self.use_accent,
+            custom,
+            self.ring_accent,
+            self.poll_secs,
+            q(&self.update_mode),
             self.pin_tip_shown,
+            self.flyout_grid,
             hidden.join(", ")
         );
         let _ = std::fs::write(path, text);

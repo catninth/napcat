@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::mem::size_of;
-use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -52,6 +52,13 @@ static UPDATES: AtomicBool = AtomicBool::new(true);
 
 pub fn set_updates_enabled(on: bool) {
     UPDATES.store(on, Ordering::Relaxed);
+}
+
+/// Frissítési gyakoriság (beállítás): a providerek időközei ehhez arányosak (alap: 60 mp).
+static POLL_SECS: AtomicU32 = AtomicU32::new(60);
+
+pub fn set_poll_secs(secs: u32) {
+    POLL_SECS.store(secs.clamp(30, 300), Ordering::Relaxed);
 }
 /// Akkumulátoros üzem: dupla időközök.
 static ON_BATTERY: AtomicBool = AtomicBool::new(false);
@@ -168,7 +175,8 @@ unsafe fn run(hwnd: HWND, tx: Sender<DeviceState>) {
                 }
             }
             let factor = if ON_BATTERY.load(Ordering::Relaxed) { 2 } else { 1 };
-            *due = p.poll_interval().map(|i| now + i * factor);
+            let poll = POLL_SECS.load(Ordering::Relaxed);
+            *due = p.poll_interval().map(|i| now + i * factor * poll / 60);
         }
         // Az első olvasás után mindig jelzünk (akkor is, ha nincs eszköz), hogy a UI tudja: kész.
         if any || first {

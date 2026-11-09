@@ -1,4 +1,6 @@
-//! Bal klikkes felugró panel: az eszközök listája nagyobb gyűrűkkel, névvel, állapottal.
+//! Bal klikkes felugró panel a design "Tálca + felugró panel" artboardja szerint: fejléc (logó,
+//! összesítés, nézetváltó és beállítások gomb), lemerülés figyelmeztetés, eszközlista vagy rács,
+//! lábléc (utolsó frissítés, eszköz párosítása).
 //!
 //! Saját Win32 popup ablak Direct2D-vel. Csak megnyitva létezik: bezáráskor (fókuszvesztés,
 //! Esc) az ablak és a rajzoló erőforrásai is felszabadulnak.
@@ -14,38 +16,64 @@ use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::DirectWrite::*;
 use windows::Win32::Graphics::Dwm::*;
-use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
-use windows::Win32::UI::Controls::MARGINS;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::ProcessStatus::K32EmptyWorkingSet;
 use windows::Win32::System::SystemInformation::GetTickCount;
 use windows::Win32::System::Threading::GetCurrentProcess;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
-use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
+use windows::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_ESCAPE};
+use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
+use super::draw::{contains, icon, rect, Painter};
 use super::icon_render::{IconRenderer, Layout};
-use super::theme::{rgb, Theme};
+use super::theme::Theme;
 use crate::model::{ChargeState, DeviceState};
 
-// Méretek DIP-ben (96 DPI-n pixel).
-const WIDTH: f32 = 320.0;
-const PAD: f32 = 12.0;
-const HEADER: f32 = 52.0;
-const ROW: f32 = 60.0;
-const RING: f32 = 40.0;
+/// Üzenet a tálca ablaknak: wParam 1 = nézet váltás (lParam: 1 rács, 0 lista), 2 = beállítások.
+pub const WM_FLYOUT: u32 = WM_APP + 5;
+pub const FLYOUT_GRID: usize = 1;
+pub const FLYOUT_SETTINGS: usize = 2;
+
+// Méretek DIP-ben (96 DPI-n pixel), a design szerint.
+const W: f32 = 380.0;
+const PAD: f32 = 16.0;
+const GAP: f32 = 14.0;
+const HEAD: f32 = 32.0;
+const ALERT: f32 = 38.0;
+const ROW: f32 = 64.0;
+const ROW_GAP: f32 = 2.0;
+const RING: f32 = 48.0;
+const TILE: f32 = 144.0;
+const TILE_GAP: f32 = 8.0;
+const TILE_RING: f32 = 64.0;
+const FOOT: f32 = 45.0;
+
+/// A kurzor elhagyta az ablakot (TrackMouseEvent); a windows crate a Controls modulban tartja.
+const WM_MOUSELEAVE: u32 = 0x02A3;
+
+/// Kattintható elemek.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Hit {
+    View,
+    Settings,
+    Pair,
+}
 
 struct Flyout {
     hwnd: HWND,
+    owner: HWND,
     devices: Vec<DeviceState>,
+    grid: bool,
+    /// Hány másodperce jött az utolsó eszközfrissítés.
+    updated: Option<u64>,
     renderer: IconRenderer,
     rt: Option<ID2D1HwndRenderTarget>,
     dpi: f32,
     anchor_bottom: i32,
-    /// Windows 11 rendszerháttér (áttetsző, a Windows saját felugró paneljeihez hasonló);
-    /// Windows 10-en egyszínű háttér.
-    backdrop: bool,
+    hits: Vec<(Hit, D2D_RECT_F)>,
+    hover: Option<Hit>,
 }
 
 thread_local! {
@@ -56,7 +84,7 @@ thread_local! {
 }
 
 /// Megnyitja a panelt a tálcaikon (`anchor`) fölött, vagy bezárja, ha nyitva van.
-pub unsafe fn toggle(anchor: RECT, devices: Vec<DeviceState>) {
+pub unsafe fn toggle(owner: HWND, anchor: RECT, devices: Vec<DeviceState>, grid: bool, updated: Option<u64>) {
     if let Some(hwnd) = FLYOUT.with_borrow(|f| f.as_ref().map(|f| f.hwnd)) {
         let _ = DestroyWindow(hwnd);
         return;
@@ -64,33 +92,76 @@ pub unsafe fn toggle(anchor: RECT, devices: Vec<DeviceState>) {
     if GetTickCount().wrapping_sub(CLOSED_AT.get()) < 300 {
         return;
     }
-    let _ = open(anchor, devices);
+    let _ = open(owner, anchor, devices, grid, updated);
 }
 
 /// Friss eszközállapotok egy nyitott panelnek.
-pub unsafe fn update(devices: &[DeviceState]) {
-    let resize = FLYOUT.with_borrow_mut(|f| {
+pub unsafe fn update(devices: &[DeviceState], updated: Option<u64>) {
+    let hwnd = FLYOUT.with_borrow_mut(|f| {
         let f = f.as_mut()?;
-        let resize = f.devices.len() != devices.len();
         f.devices = devices.to_vec();
-        let _ = InvalidateRect(f.hwnd, None, false);
-        resize.then_some((f.hwnd, f.dpi, f.anchor_bottom, devices.len()))
+        f.updated = updated;
+        Some(f.hwnd)
     });
-    if let Some((hwnd, dpi, bottom, n)) = resize {
-        let (w, h) = size_px(dpi, n);
-        let mut rc = RECT::default();
-        let _ = GetWindowRect(hwnd, &mut rc);
-        let _ = SetWindowPos(hwnd, None, rc.right - w, bottom - h, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+    if let Some(hwnd) = hwnd {
+        resize(hwnd);
     }
 }
 
-fn size_px(dpi: f32, rows: usize) -> (i32, i32) {
-    let scale = dpi / 96.0;
-    let h = HEADER + ROW * rows.max(1) as f32 + PAD;
-    ((WIDTH * scale).round() as i32, (h * scale).round() as i32)
+/// A tartalom magassága DIP-ben.
+fn content_height(devices: &[DeviceState], grid: bool) -> f32 {
+    let n = devices.len();
+    let list = if n == 0 {
+        40.0
+    } else if grid {
+        let rows = n.div_ceil(3) as f32;
+        rows * TILE + (rows - 1.0) * TILE_GAP
+    } else {
+        n as f32 * ROW + (n as f32 - 1.0) * ROW_GAP
+    };
+    let alert = if alert_device(devices).is_some() { ALERT + GAP } else { 0.0 };
+    PAD + HEAD + GAP + alert + list + GAP + FOOT + PAD
 }
 
-unsafe fn open(anchor: RECT, devices: Vec<DeviceState>) -> Result<()> {
+fn size_px(dpi: f32, devices: &[DeviceState], grid: bool) -> (i32, i32) {
+    let scale = dpi / 96.0;
+    ((W * scale).round() as i32, (content_height(devices, grid) * scale).round() as i32)
+}
+
+/// Az első lemerülőben lévő (20% alatti, nem töltő) eszköz.
+fn alert_device(devices: &[DeviceState]) -> Option<&DeviceState> {
+    devices.iter().find(|d| d.connected && d.charge == ChargeState::Discharging && d.level.is_some_and(|l| l < 20))
+}
+
+/// Magyar névelő: "az" magánhangzóval kezdődő név előtt.
+fn article(name: &str) -> &'static str {
+    let first = name.chars().next().map(|c| c.to_lowercase().next().unwrap_or(c));
+    if first.is_some_and(|c| "aáeéiíoóöőuúüű".contains(c)) { "Az" } else { "A" }
+}
+
+/// Az állapotsor a név alatt.
+fn status_text(d: &DeviceState) -> &'static str {
+    match (d.connected, d.charge, d.level) {
+        (false, _, _) => "Nincs csatlakoztatva",
+        (true, ChargeState::Charging, _) => "Töltés",
+        (true, ChargeState::Full, _) => "Feltöltve",
+        (true, ChargeState::Discharging, Some(l)) if l < 20 => "Lemerülőben",
+        (true, ChargeState::Discharging, _) => "Nem tölt",
+        (true, ChargeState::Unknown, None) => "Csatlakoztatva, szint ismeretlen",
+        (true, ChargeState::Unknown, Some(_)) => "Csatlakoztatva",
+    }
+}
+
+fn updated_text(updated: Option<u64>) -> String {
+    match updated {
+        None => "Frissítve: –".into(),
+        Some(s) if s < 60 => "Frissítve: most".into(),
+        Some(s) if s < 3600 => format!("Frissítve: {} perce", s / 60),
+        Some(s) => format!("Frissítve: {} órája", s / 3600),
+    }
+}
+
+unsafe fn open(owner: HWND, anchor: RECT, devices: Vec<DeviceState>, grid: bool, updated: Option<u64>) -> Result<()> {
     let hinst = GetModuleHandleW(None)?;
     let class = w!("NapCatFlyout");
     let wc = WNDCLASSW {
@@ -107,7 +178,7 @@ unsafe fn open(anchor: RECT, devices: Vec<DeviceState>) -> Result<()> {
     let (mut dx, mut dy) = (96u32, 96u32);
     let _ = GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
     let dpi = dx as f32;
-    let (w, h) = size_px(dpi, devices.len());
+    let (w, h) = size_px(dpi, &devices, grid);
 
     // A tálca fölé (vagy mellé, ha függőleges), a munkaterületen belül.
     let point = POINT { x: (anchor.left + anchor.right) / 2, y: (anchor.top + anchor.bottom) / 2 };
@@ -117,32 +188,40 @@ unsafe fn open(anchor: RECT, devices: Vec<DeviceState>) -> Result<()> {
         pos = RECT { left: point.x - w / 2, top: anchor.top - h, right: point.x + w / 2, bottom: anchor.top };
     }
 
-    let hwnd = CreateWindowExW(
-        WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
-        class,
-        w!("NapCat"),
-        WS_POPUP,
-        pos.left,
-        pos.top,
-        w,
-        h,
-        None,
-        None,
-        hinst,
-        None,
-    )?;
-    let theme = Theme::current();
+    let hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, class, w!("NapCat"), WS_POPUP, pos.left, pos.top, w, h, None, None, hinst, None)?;
+    let theme = Theme::ui();
     set_dwm_attr(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND.0); // Win11; Win10-en hatástalan
     set_dwm_attr(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, (!theme.light) as i32);
-    // Rendszerháttér (Win11 22H2+): a kliensterületre kiterjesztett kereten át látszik, ahol a
-    // Direct2D átlátszót rajzol. Régebbi Windows-on a hívás hibát ad, ott egyszínű marad.
-    let backdrop = set_dwm_attr(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, DWMSBT_TRANSIENTWINDOW.0)
-        && DwmExtendFrameIntoClientArea(hwnd, &MARGINS { cxLeftWidth: -1, cxRightWidth: -1, cyTopHeight: -1, cyBottomHeight: -1 }).is_ok();
+    // A design 1 px-es halvány kerete (a panel színére keverve), COLORREF: 0x00BBGGRR.
+    set_dwm_attr(hwnd, DWMWA_BORDER_COLOR, if theme.light { 0x00E4E4E5 } else { 0x00373632 });
 
-    FLYOUT.set(Some(Flyout { hwnd, devices, renderer: IconRenderer::new()?, rt: None, dpi, anchor_bottom: pos.top + h, backdrop }));
+    FLYOUT.set(Some(Flyout {
+        hwnd,
+        owner,
+        devices,
+        grid,
+        updated,
+        renderer: IconRenderer::new()?,
+        rt: None,
+        dpi,
+        anchor_bottom: pos.top + h,
+        hits: Vec::new(),
+        hover: None,
+    }));
     let _ = ShowWindow(hwnd, SW_SHOW);
     let _ = SetForegroundWindow(hwnd);
     Ok(())
+}
+
+/// Méret a tartalomhoz, az alsó szél a helyén marad (a panel a tálca fölött nő vagy zsugorodik).
+unsafe fn resize(hwnd: HWND) {
+    let size = FLYOUT.with_borrow(|f| f.as_ref().map(|f| (size_px(f.dpi, &f.devices, f.grid), f.anchor_bottom)));
+    if let Some(((w, h), bottom)) = size {
+        let mut rc = RECT::default();
+        let _ = GetWindowRect(hwnd, &mut rc);
+        let _ = SetWindowPos(hwnd, None, rc.left, bottom - h, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+        let _ = InvalidateRect(hwnd, None, false);
+    }
 }
 
 unsafe fn set_dwm_attr(hwnd: HWND, attr: DWMWINDOWATTRIBUTE, value: i32) -> bool {
@@ -154,24 +233,15 @@ unsafe fn paint(f: &mut Flyout) -> Result<()> {
     GetClientRect(f.hwnd, &mut rc)?;
     let size = D2D_SIZE_U { width: (rc.right - rc.left) as u32, height: (rc.bottom - rc.top) as u32 };
     if f.rt.is_none() {
-        // Premultiplied alfa: az átlátszó pixeleken a rendszerháttér látszik.
-        let props = D2D1_RENDER_TARGET_PROPERTIES {
-            pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
-            dpiX: f.dpi,
-            dpiY: f.dpi,
-            ..Default::default()
-        };
+        let props = D2D1_RENDER_TARGET_PROPERTIES { dpiX: f.dpi, dpiY: f.dpi, ..Default::default() };
         let hwnd_props = D2D1_HWND_RENDER_TARGET_PROPERTIES { hwnd: f.hwnd, pixelSize: size, presentOptions: D2D1_PRESENT_OPTIONS_NONE };
         f.rt = Some(f.renderer.d2d().CreateHwndRenderTarget(&props, &hwnd_props)?);
     }
     let rt = f.rt.as_ref().unwrap();
     rt.Resize(&size)?;
     let ctx: ID2D1DeviceContext = rt.cast()?;
-    if f.backdrop {
-        ctx.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE); // ClearType csak átlátszatlan háttéren
-    }
     ctx.BeginDraw();
-    draw_content(&ctx, &f.renderer, &f.devices, Theme::current(), !f.backdrop)?;
+    f.hits = draw_content(&ctx, &f.renderer, &f.devices, f.grid, f.updated, f.hover, Theme::ui())?;
     if let Err(e) = ctx.EndDraw(None, None) {
         if e.code() == D2DERR_RECREATE_TARGET {
             f.rt = None;
@@ -180,80 +250,149 @@ unsafe fn paint(f: &mut Flyout) -> Result<()> {
     Ok(())
 }
 
-/// A panel tartalma DIP-ben; az ablak és az előnézeti teszt is ezt rajzolja. `opaque`: egyszínű
-/// háttér (Windows 10, előnézet); különben átlátszó, a rendszerháttér látszik át.
-unsafe fn draw_content(ctx: &ID2D1DeviceContext, renderer: &IconRenderer, devices: &[DeviceState], theme: Theme, opaque: bool) -> Result<()> {
-    let text = Text { ctx, dwrite: renderer.dwrite() };
-    let bg = opaque.then(|| theme.panel());
-    ctx.Clear(Some(&bg.unwrap_or(rgb(0, 0.0))));
+/// A panel tartalma DIP-ben; az ablak és az előnézeti teszt is ezt rajzolja. A kattintható
+/// elemek helyét adja vissza.
+unsafe fn draw_content(
+    ctx: &ID2D1DeviceContext,
+    renderer: &IconRenderer,
+    devices: &[DeviceState],
+    grid: bool,
+    updated: Option<u64>,
+    hover: Option<Hit>,
+    theme: Theme,
+) -> Result<Vec<(Hit, D2D_RECT_F)>> {
+    let p = Painter { ctx, renderer };
+    let (fg, sub, accent) = (theme.fg(1.0), theme.sub(), theme.accent());
+    ctx.Clear(Some(&theme.panel()));
+    let mut hits = Vec::new();
+    let button = |hit: Hit, r: D2D_RECT_F, hits: &mut Vec<(Hit, D2D_RECT_F)>| -> Result<()> {
+        if hover == Some(hit) {
+            p.fill(r, 6.0, theme.tile())?;
+        }
+        hits.push((hit, r));
+        Ok(())
+    };
 
-    // Fejléc: cím és összesítés.
+    // Fejléc: logó, cím, összesítés, nézetváltó és beállítások gomb.
+    let mut y = PAD;
+    p.logo(PAD, y + 5.0, 22.0, theme, accent)?;
+    p.text("NapCat", 15.0, DWRITE_FONT_WEIGHT_SEMI_BOLD, rect(PAD + 32.0, y, 80.0, HEAD), fg, DWRITE_TEXT_ALIGNMENT_LEADING)?;
     let charging = devices.iter().filter(|d| d.is_charging()).count();
     let summary = match (devices.len(), charging) {
-        (0, _) => "nincs ismert eszköz".to_string(),
+        (0, _) => "nincs eszköz".to_string(),
         (n, 0) => format!("{n} eszköz"),
         (n, c) => format!("{n} eszköz · {c} tölt"),
     };
-    text.draw("NapCat", 15.0, DWRITE_FONT_WEIGHT_SEMI_BOLD, PAD + 4.0, 16.0, 120.0, theme.fg(1.0), false)?;
-    text.draw(&summary, 12.0, DWRITE_FONT_WEIGHT_NORMAL, PAD + 72.0, 18.5, 220.0, theme.sub(), false)?;
+    let title_w = p.text_width("NapCat", 15.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
+    p.text(&summary, 12.0, DWRITE_FONT_WEIGHT_NORMAL, rect(PAD + 32.0 + title_w + 8.0, y, 160.0, HEAD), sub, DWRITE_TEXT_ALIGNMENT_LEADING)?;
+    let settings_r = rect(W - PAD - 32.0, y, 32.0, 32.0);
+    let view_r = rect(W - PAD - 66.0, y, 32.0, 32.0);
+    button(Hit::View, view_r, &mut hits)?;
+    button(Hit::Settings, settings_r, &mut hits)?;
+    p.icon(if grid { icon::LIST } else { icon::GRID }, view_r.left + 8.0, y + 8.0, 16.0, 1.8, sub)?;
+    p.icon(icon::GEAR, settings_r.left + 8.0, y + 8.0, 16.0, 1.8, sub)?;
+    y += HEAD + GAP;
 
-    // Eszközsorok.
-    let right = WIDTH - PAD - 4.0;
-    for (i, d) in devices.iter().enumerate() {
-        let y = HEADER + i as f32 * ROW;
-        let ring_y = y + (ROW - RING) / 2.0;
-        ctx.SetTransform(&Matrix3x2::translation(PAD + 4.0, ring_y));
-        renderer.draw(ctx, d, RING, theme, Layout::Ring, bg)?;
-        ctx.SetTransform(&Matrix3x2::identity());
-
-        let x = PAD + 4.0 + RING + 14.0;
-        let name_color = theme.fg(if d.connected { 1.0 } else { 0.6 });
-        text.draw(&d.name, 14.0, DWRITE_FONT_WEIGHT_SEMI_BOLD, x, y + 12.0, right - x - 52.0, name_color, false)?;
-        text.draw(d.status(), 12.0, DWRITE_FONT_WEIGHT_NORMAL, x, y + 32.0, right - x - 52.0, theme.sub(), false)?;
-        let (pct, pct_color) = match (d.connected, d.level) {
-            (true, Some(l)) if l < 20 && d.charge != ChargeState::Charging => (d.level_text().unwrap_or_default(), theme.ring(d)),
-            (true, Some(_)) => (d.level_text().unwrap_or_default(), theme.fg(1.0)),
-            _ => ("–".to_string(), theme.sub()),
-        };
-        text.draw(&pct, 17.0, DWRITE_FONT_WEIGHT_SEMI_BOLD, right - 60.0, y + 19.0, 60.0, pct_color, true)?;
+    // Lemerülés figyelmeztetés.
+    if let Some(d) = alert_device(devices) {
+        p.fill(rect(PAD, y, W - 2.0 * PAD, ALERT), 8.0, theme.alert_bg())?;
+        p.icon(icon::WARNING, PAD + 12.0, y + 11.0, 16.0, 2.0, theme.red())?;
+        let msg = format!("{} {} lemerülőben – {} van hátra", article(&d.name), d.name, d.level_text().unwrap_or_default());
+        p.text(&msg, 12.5, DWRITE_FONT_WEIGHT_NORMAL, rect(PAD + 38.0, y, W - 2.0 * PAD - 50.0, ALERT), fg, DWRITE_TEXT_ALIGNMENT_LEADING)?;
+        y += ALERT + GAP;
     }
+
+    // Eszközök: lista vagy rács.
+    let pct = |d: &DeviceState| match (d.connected, d.level) {
+        (true, Some(l)) if l < 20 && d.charge != ChargeState::Charging => (d.level_text().unwrap_or_default(), theme.red()),
+        (true, Some(_)) => (d.level_text().unwrap_or_default(), fg),
+        _ => ("–".to_string(), sub),
+    };
     if devices.is_empty() {
-        let msg = "Csatlakoztass egy támogatott eszközt.";
-        text.draw(msg, 12.5, DWRITE_FONT_WEIGHT_NORMAL, PAD + 4.0, HEADER + 20.0, WIDTH - 2.0 * PAD, theme.sub(), false)?;
-    }
-    Ok(())
-}
-
-struct Text<'a> {
-    ctx: &'a ID2D1DeviceContext,
-    dwrite: &'a IDWriteFactory,
-}
-
-impl Text<'_> {
-    /// Egysoros szöveg (x, y) bal felső sarokkal, `width` szélességben; túl hosszúnál "…".
-    #[allow(clippy::too_many_arguments)]
-    unsafe fn draw(&self, s: &str, size: f32, weight: DWRITE_FONT_WEIGHT, x: f32, y: f32, width: f32, color: D2D1_COLOR_F, right: bool) -> Result<()> {
-        let format = self.dwrite.CreateTextFormat(
-            w!("Segoe UI"),
-            None,
-            weight,
-            DWRITE_FONT_STYLE_NORMAL,
-            DWRITE_FONT_STRETCH_NORMAL,
-            size,
-            w!(""),
-        )?;
-        format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
-        if right {
-            format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING)?;
+        p.text("Csatlakoztass egy támogatott eszközt.", 12.5, DWRITE_FONT_WEIGHT_NORMAL, rect(PAD + 8.0, y, W - 2.0 * PAD, 40.0), sub, DWRITE_TEXT_ALIGNMENT_LEADING)?;
+        y += 40.0;
+    } else if grid {
+        let tw = (W - 2.0 * PAD - 2.0 * TILE_GAP) / 3.0;
+        for (i, d) in devices.iter().enumerate() {
+            let (col, row) = ((i % 3) as f32, (i / 3) as f32);
+            let (x, ty) = (PAD + col * (tw + TILE_GAP), y + row * (TILE + TILE_GAP));
+            p.fill(rect(x, ty, tw, TILE), 10.0, theme.tile())?;
+            ctx.SetTransform(&Matrix3x2::translation(x + (tw - TILE_RING) / 2.0, ty + 14.0));
+            renderer.draw(ctx, d, TILE_RING, theme, Layout::Ring, Some(theme.tile()))?;
+            ctx.SetTransform(&Matrix3x2::identity());
+            let (text, color) = pct(d);
+            p.text(&text, 16.0, DWRITE_FONT_WEIGHT_SEMI_BOLD, rect(x + 4.0, ty + 86.0, tw - 8.0, 22.0), color, DWRITE_TEXT_ALIGNMENT_CENTER)?;
+            p.text(&d.name, 11.5, DWRITE_FONT_WEIGHT_NORMAL, rect(x + 6.0, ty + 114.0, tw - 12.0, 18.0), sub, DWRITE_TEXT_ALIGNMENT_CENTER)?;
         }
-        let ellipsis = self.dwrite.CreateEllipsisTrimmingSign(&format)?;
-        let trimming = DWRITE_TRIMMING { granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER, delimiter: 0, delimiterCount: 0 };
-        format.SetTrimming(&trimming, &ellipsis)?;
-        let wide: Vec<u16> = s.encode_utf16().collect();
-        let brush = self.ctx.CreateSolidColorBrush(&color, None)?;
-        let rect = D2D_RECT_F { left: x, top: y, right: x + width, bottom: y + size * 1.5 };
-        self.ctx.DrawText(&wide, &format, &rect, &brush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
-        Ok(())
+        let rows = devices.len().div_ceil(3) as f32;
+        y += rows * TILE + (rows - 1.0) * TILE_GAP;
+    } else {
+        for d in devices {
+            ctx.SetTransform(&Matrix3x2::translation(PAD + 8.0, y + 8.0));
+            renderer.draw(ctx, d, RING, theme, Layout::Ring, Some(theme.panel()))?;
+            ctx.SetTransform(&Matrix3x2::identity());
+            let x = PAD + 8.0 + RING + 14.0;
+            let text_w = W - PAD - 8.0 - 70.0 - x;
+            let name_color = if d.connected { fg } else { sub };
+            p.text(&d.name, 14.0, DWRITE_FONT_WEIGHT_SEMI_BOLD, rect(x, y + 11.0, text_w, 20.0), name_color, DWRITE_TEXT_ALIGNMENT_LEADING)?;
+            p.circle(x + 3.0, y + 41.0, 3.0, theme.ring(d))?;
+            p.text(status_text(d), 12.0, DWRITE_FONT_WEIGHT_NORMAL, rect(x + 12.0, y + 33.0, text_w - 12.0, 17.0), sub, DWRITE_TEXT_ALIGNMENT_LEADING)?;
+            let (text, color) = pct(d);
+            p.text(&text, 17.0, DWRITE_FONT_WEIGHT_SEMI_BOLD, rect(W - PAD - 8.0 - 70.0, y, 70.0, ROW), color, DWRITE_TEXT_ALIGNMENT_TRAILING)?;
+            y += ROW + ROW_GAP;
+        }
+        y -= ROW_GAP;
+    }
+    y += GAP;
+
+    // Lábléc: elválasztó, utolsó frissítés, eszköz párosítása gomb.
+    p.line(PAD, y + 0.5, W - PAD, y + 0.5, theme.border())?;
+    let fy = y + 13.0;
+    p.text(&updated_text(updated), 12.0, DWRITE_FONT_WEIGHT_NORMAL, rect(PAD, fy, 160.0, 32.0), sub, DWRITE_TEXT_ALIGNMENT_LEADING)?;
+    let label = "Eszköz párosítása";
+    let bw = 12.0 + 14.0 + 6.0 + p.text_width(label, 12.5, DWRITE_FONT_WEIGHT_MEDIUM)? + 12.0;
+    let pair_r = rect(W - PAD - bw, fy, bw, 32.0);
+    let accent_bg = if hover == Some(Hit::Pair) { D2D1_COLOR_F { a: 0.85, ..accent } } else { accent };
+    p.fill(pair_r, 6.0, accent_bg)?;
+    p.icon(icon::PLUS, pair_r.left + 12.0, fy + 9.0, 14.0, 2.0, theme.on_accent())?;
+    p.text(label, 12.5, DWRITE_FONT_WEIGHT_MEDIUM, rect(pair_r.left + 32.0, fy, bw - 38.0, 32.0), theme.on_accent(), DWRITE_TEXT_ALIGNMENT_LEADING)?;
+    hits.push((Hit::Pair, pair_r));
+    Ok(hits)
+}
+
+/// A kurzor alatti kattintható elem (lParam: kliens koordináták pixelben).
+fn hit_at(lparam: LPARAM) -> Option<Hit> {
+    let (x, y) = ((lparam.0 & 0xFFFF) as i16 as f32, ((lparam.0 >> 16) & 0xFFFF) as i16 as f32);
+    FLYOUT.with_borrow(|f| {
+        let f = f.as_ref()?;
+        let scale = f.dpi / 96.0;
+        f.hits.iter().find(|(_, r)| contains(r, x / scale, y / scale)).map(|(h, _)| *h)
+    })
+}
+
+unsafe fn on_click(hwnd: HWND, hit: Hit) {
+    match hit {
+        Hit::View => {
+            let state = FLYOUT.with_borrow_mut(|f| {
+                let f = f.as_mut()?;
+                f.grid = !f.grid;
+                Some((f.owner, f.grid))
+            });
+            if let Some((owner, grid)) = state {
+                let _ = PostMessageW(owner, WM_FLYOUT, WPARAM(FLYOUT_GRID), LPARAM(grid as isize));
+                resize(hwnd);
+            }
+        }
+        Hit::Settings => {
+            if let Some(owner) = FLYOUT.with_borrow(|f| f.as_ref().map(|f| f.owner)) {
+                let _ = PostMessageW(owner, WM_FLYOUT, WPARAM(FLYOUT_SETTINGS), LPARAM(0));
+            }
+            let _ = DestroyWindow(hwnd);
+        }
+        Hit::Pair => {
+            ShellExecuteW(None, w!("open"), w!("ms-settings:bluetooth"), None, None, SW_SHOWNORMAL);
+            let _ = DestroyWindow(hwnd);
+        }
     }
 }
 
@@ -265,7 +404,7 @@ mod tests {
     use windows::Win32::Graphics::Imaging::*;
     use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED};
 
-    /// Panel előnézet sötét és világos témában, 2x méretben: target/flyout-preview-{dark,light}.png.
+    /// Panel előnézet (lista és rács, sötét és világos), 2x méretben: target/flyout-preview-*.png.
     #[test]
     fn flyout_preview() {
         unsafe {
@@ -282,14 +421,14 @@ mod tests {
                 connected,
             };
             let devices = vec![
-                dev("Royal Kludge R75 Pro", DeviceKind::Keyboard, None, ChargeState::Charging, true),
-                dev("VGN Dragonfly", DeviceKind::Mouse, None, ChargeState::Unknown, true),
-                dev("Logitech G435", DeviceKind::Headset, Some(46), ChargeState::Discharging, true),
-                dev("DualSense", DeviceKind::Controller, Some(12), ChargeState::Discharging, true),
+                dev("DualShock 4", DeviceKind::Controller, Some(12), ChargeState::Discharging, true),
+                dev("Logitech G435", DeviceKind::Headset, Some(46), ChargeState::Charging, true),
+                dev("VGN Dragonfly", DeviceKind::Mouse, Some(78), ChargeState::Discharging, true),
+                dev("Royal Kludge R75 Pro", DeviceKind::Keyboard, Some(100), ChargeState::Full, true),
                 dev("Xbox kontroller", DeviceKind::Controller, None, ChargeState::Unknown, false),
             ];
-            for (name, light) in [("dark", false), ("light", true)] {
-                let (w, h) = size_px(192.0, devices.len());
+            for (name, light, grid) in [("dark", false, false), ("light", true, false), ("grid", false, true)] {
+                let (w, h) = size_px(192.0, &devices, grid);
                 let bmp = wic.CreateBitmap(w as u32, h as u32, &GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand).unwrap();
                 let props = D2D1_RENDER_TARGET_PROPERTIES {
                     pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
@@ -299,7 +438,7 @@ mod tests {
                 };
                 let ctx: ID2D1DeviceContext = renderer.d2d().CreateWicBitmapRenderTarget(&bmp, &props).unwrap().cast().unwrap();
                 ctx.BeginDraw();
-                draw_content(&ctx, &renderer, &devices, Theme { light }, true).unwrap();
+                draw_content(&ctx, &renderer, &devices, grid, Some(5), None, Theme { light }).unwrap();
                 ctx.EndDraw(None, None).unwrap();
 
                 let path: Vec<u16> =
@@ -338,6 +477,32 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 LRESULT(0)
             }
             WM_ERASEBKGND => LRESULT(1),
+            WM_MOUSEMOVE => {
+                let hover = hit_at(lparam);
+                let changed = FLYOUT.with_borrow_mut(|f| f.as_mut().is_some_and(|f| std::mem::replace(&mut f.hover, hover) != hover));
+                if changed {
+                    let _ = InvalidateRect(hwnd, None, false);
+                }
+                let mut tme = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: hwnd, dwHoverTime: 0 };
+                let _ = TrackMouseEvent(&mut tme);
+                SetCursor(LoadCursorW(None, if hover.is_some() { IDC_HAND } else { IDC_ARROW }).unwrap_or_default());
+                LRESULT(0)
+            }
+            WM_MOUSELEAVE => {
+                FLYOUT.with_borrow_mut(|f| {
+                    if let Some(f) = f {
+                        f.hover = None;
+                    }
+                });
+                let _ = InvalidateRect(hwnd, None, false);
+                LRESULT(0)
+            }
+            WM_LBUTTONUP => {
+                if let Some(hit) = hit_at(lparam) {
+                    on_click(hwnd, hit);
+                }
+                LRESULT(0)
+            }
             WM_ACTIVATE if (wparam.0 & 0xFFFF) as u32 == WA_INACTIVE => {
                 let _ = DestroyWindow(hwnd);
                 LRESULT(0)

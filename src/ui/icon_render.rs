@@ -289,7 +289,7 @@ impl IconRenderer {
     }
 
     /// Ív 12 órától óramutató irányban, lekerekített végekkel; `fraction` 0..=1.
-    unsafe fn arc(&self, rt: &ID2D1DeviceContext, c: f32, r: f32, sw: f32, fraction: f32, brush: &ID2D1SolidColorBrush) -> Result<()> {
+    pub unsafe fn arc(&self, rt: &ID2D1DeviceContext, c: f32, r: f32, sw: f32, fraction: f32, brush: &ID2D1SolidColorBrush) -> Result<()> {
         let round = self.stroke_style(&[])?;
         if fraction >= 1.0 {
             let ellipse = D2D1_ELLIPSE { point: D2D_POINT_2F { x: c, y: c }, radiusX: r, radiusY: r };
@@ -335,7 +335,7 @@ impl IconRenderer {
     }
 
     /// Lekerekített végű vonalstílus; `dashes` nem üres esetén szaggatott (a vonalvastagság egységében).
-    unsafe fn stroke_style(&self, dashes: &[f32]) -> Result<ID2D1StrokeStyle> {
+    pub unsafe fn stroke_style(&self, dashes: &[f32]) -> Result<ID2D1StrokeStyle> {
         let props = D2D1_STROKE_STYLE_PROPERTIES1 {
             startCap: D2D1_CAP_STYLE_ROUND,
             endCap: D2D1_CAP_STYLE_ROUND,

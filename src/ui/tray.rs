@@ -21,8 +21,9 @@ use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use super::flyout;
+use super::settings_window;
 use super::icon_render::{IconRenderer, Layout};
-use super::theme::Theme;
+use super::theme::{self, Theme};
 use crate::model::{ChargeState, DeviceKind, DeviceState};
 use crate::settings::{self, Settings};
 use crate::updater;
@@ -36,15 +37,10 @@ const NIN_KEYSELECT: u32 = NIN_SELECT | NINF_KEY;
 // Menüparancsok.
 const ID_EXIT: usize = 100;
 const ID_AUTOSTART: usize = 101;
-const ID_NOTIFY_LOW: usize = 102;
+const ID_SETTINGS: usize = 102;
 const ID_HIDE: usize = 103;
 const ID_UPDATE: usize = 104;
 const ID_SHOW_BASE: usize = 200;
-const ID_STYLE_BASE: usize = 300;
-const ID_UPDATE_MODE_BASE: usize = 400;
-
-const UPDATE_MODES: [(&str, &str); 3] =
-    [("auto", "Automatikus telepítés"), ("notify", "Csak értesítés"), ("off", "Kikapcsolva")];
 
 /// A letöltött, ellenőrzött telepítő készen áll (READY).
 const WM_UPDATE_READY: u32 = WM_APP + 4;
@@ -103,8 +99,16 @@ unsafe fn on_update_ready(hwnd: HWND) {
     }
 }
 
-/// Alacsony akku értesítés küszöbei (%), mindegyiknél egyszer szól.
-const LOW_THRESHOLDS: [u8; 2] = [15, 5];
+/// Alacsony akku értesítés második (kritikus) küszöbe; az első a beállításokból jön.
+const CRITICAL: u8 = 5;
+
+/// Teljes képernyős alkalmazás (játék, film, bemutató) fut-e: ilyenkor a csendes mód vár.
+unsafe fn user_busy() -> bool {
+    matches!(SHQueryUserNotificationState(), Ok(s) if s == QUNS_BUSY || s == QUNS_RUNNING_D3D_FULL_SCREEN || s == QUNS_PRESENTATION_MODE)
+}
+
+/// Várakozó értesítések ellenőrzése (csendes módban) ennyi időnként.
+const QUIET_TIMER: usize = 1;
 
 /// Alap GUID; eszközönként ebből és az eszköz azonosítójából képzünk stabil GUID-ot, hogy a
 /// Windows megjegyezze, melyik ikon van kitűzve. A GUID az exe útvonalához kötődik, ezért ha egy
@@ -145,6 +149,10 @@ struct TrayIcon {
     key: Option<IconKey>,
     /// A legalacsonyabb küszöb, amelyről már szóltunk (100: még semmiről).
     warned: u8,
+    /// A teli töltésről már szóltunk (merüléskor újra élesedik).
+    full_notified: bool,
+    /// "Egy ikon" módban az összes eszköz összesítése a tooltipben.
+    summary: Option<String>,
 }
 
 impl TrayIcon {
@@ -152,7 +160,18 @@ impl TrayIcon {
         let mut h = DefaultHasher::new();
         state.id.hash(&mut h);
         let guid = GUID::from_u128(BASE_GUID ^ h.finish() as u128);
-        TrayIcon { uid, guid, use_guid: true, shown: false, state, icon: HICON::default(), key: None, warned: 100 }
+        TrayIcon {
+            uid,
+            guid,
+            use_guid: true,
+            shown: false,
+            state,
+            icon: HICON::default(),
+            key: None,
+            warned: 100,
+            full_notified: true, // induláskor egy már teli eszközről nem szólunk
+            summary: None,
+        }
     }
 
     /// Helyőrző, amíg egyetlen látható eszköz sincs (különben nem lenne mire kattintani).
@@ -166,7 +185,9 @@ impl TrayIcon {
     }
 
     fn tooltip(&self) -> String {
-        if self.is_placeholder() {
+        if let Some(summary) = &self.summary {
+            summary.clone()
+        } else if self.is_placeholder() {
             "NapCat – nincs megjeleníthető eszköz".into()
         } else {
             self.state.tooltip()
@@ -237,7 +258,7 @@ impl TrayIcon {
 
     /// Új állapotnál eldönti, kell-e alacsony akku értesítés; a küszöböt eszközönként egyszer jelzi,
     /// töltéskor vagy jelentős visszatöltődéskor újra élesedik.
-    fn low_battery_crossed(&mut self) -> Option<u8> {
+    fn low_battery_crossed(&mut self, threshold: u8) -> Option<u8> {
         let d = &self.state;
         let Some(level) = d.level.filter(|_| d.connected && d.charge == ChargeState::Discharging) else {
             if d.is_charging() {
@@ -245,12 +266,26 @@ impl TrayIcon {
             }
             return None;
         };
-        if level > LOW_THRESHOLDS[0] + 5 {
+        if level > threshold + 5 {
             self.warned = 100;
         }
-        let crossed = LOW_THRESHOLDS.iter().rev().copied().find(|&t| level <= t && self.warned > t)?;
+        let crossed = [CRITICAL, threshold].into_iter().find(|&t| level <= t && self.warned > t)?;
         self.warned = crossed;
         Some(crossed)
+    }
+
+    /// Most lett teli (töltés vége vagy 100% töltés közben); merüléskor újra élesedik.
+    fn full_reached(&mut self) -> bool {
+        let d = &self.state;
+        let full = d.connected && (d.charge == ChargeState::Full || (d.is_charging() && d.level == Some(100)));
+        if d.connected && d.charge == ChargeState::Discharging {
+            self.full_notified = false;
+        }
+        if full && !self.full_notified {
+            self.full_notified = true;
+            return true;
+        }
+        false
     }
 }
 
@@ -267,6 +302,21 @@ struct App {
     receiver: Receiver<DeviceState>,
     settings: Settings,
     next_uid: u32,
+    last_update: Option<std::time::Instant>,
+    /// Csendes módban (teljes képernyős alkalmazás) várakozó értesítések: (eszköz id, cím, szöveg, figyelmeztetés).
+    pending: Vec<(String, String, String, bool)>,
+}
+
+/// Sürgősség az "egy ikon" módhoz: lemerülő > töltő > legalacsonyabb szint > többi (kisebb = sürgősebb).
+fn urgency(d: &DeviceState, threshold: u8) -> (u8, u8) {
+    let level = d.level.unwrap_or(101);
+    match (d.connected, d.charge, d.level) {
+        (true, ChargeState::Discharging, Some(l)) if l < threshold.max(20) => (0, l),
+        (true, ChargeState::Charging, _) => (1, level),
+        (true, _, Some(l)) => (2, l),
+        (true, _, None) => (3, 101),
+        (false, _, _) => (4, 101),
+    }
 }
 
 impl App {
@@ -278,29 +328,85 @@ impl App {
         self.devices.iter().map(|d| d.state.clone()).collect()
     }
 
-    /// Melyik ikon látszódjon: a nem rejtett eszközök, és a helyőrző, ha egy sem látszik.
+    /// A tálcán látszó eszközök: a nem rejtettek, "egy ikon" módban csak a legsürgősebb.
+    fn visible_ids(&self) -> Vec<String> {
+        let candidates = self.devices.iter().filter(|d| !self.settings.hidden.contains(&d.state.id));
+        if self.settings.tray_mode == "one" {
+            let threshold = self.settings.low_threshold;
+            candidates.min_by_key(|d| urgency(&d.state, threshold)).map(|d| vec![d.state.id.clone()]).unwrap_or_default()
+        } else {
+            candidates.map(|d| d.state.id.clone()).collect()
+        }
+    }
+
+    /// A beállítások alkalmazása (induláskor és a beállítások ablak változásainál).
+    unsafe fn apply_settings(&mut self, hwnd: HWND) {
+        let s = &self.settings;
+        theme::configure(&s.theme, s.use_accent, s.custom_accent, s.ring_accent);
+        worker::set_updates_enabled(s.update_mode != "off");
+        worker::set_poll_secs(s.poll_secs);
+        for icon in self.icons_mut() {
+            icon.key = None; // szín vagy elrendezés változhatott: újrarajzolás
+        }
+        self.sync(hwnd);
+    }
+
+    /// Melyik ikon látszódjon: a látható eszközök, és a helyőrző, ha egy sem látszik.
     unsafe fn sync(&mut self, hwnd: HWND) {
+        let visible = self.visible_ids();
+        // "Egy ikon" módban a tooltip minden (nem rejtett) eszközt felsorol.
+        let summary = (self.settings.tray_mode == "one").then(|| {
+            let lines: Vec<String> = self.devices.iter().filter(|d| !self.settings.hidden.contains(&d.state.id)).map(|d| d.state.tooltip()).collect();
+            lines.join("\n")
+        });
         for d in self.devices.iter_mut() {
-            let visible = !self.settings.hidden.contains(&d.state.id);
-            if !visible && d.shown {
+            d.summary = summary.clone().filter(|_| visible.contains(&d.state.id));
+            if !visible.contains(&d.state.id) && d.shown {
                 d.remove(hwnd);
             }
         }
-        let any_visible = self.devices.iter().any(|d| !self.settings.hidden.contains(&d.state.id));
-        if any_visible && self.placeholder.shown {
+        if !visible.is_empty() && self.placeholder.shown {
             self.placeholder.remove(hwnd);
         }
-        render_changed(hwnd, self);
-        let hidden = self.settings.hidden.clone();
-        for d in self.devices.iter_mut().filter(|d| !hidden.contains(&d.state.id)) {
+        render_changed(hwnd, self, &visible);
+        for d in self.devices.iter_mut().filter(|d| visible.contains(&d.state.id)) {
             if d.shown {
                 d.modify(hwnd); // a tooltip akkor is változhat, ha a kép nem
             } else {
                 d.add(hwnd);
             }
         }
-        if !any_visible && !self.placeholder.shown {
+        if visible.is_empty() && !self.placeholder.shown {
             self.placeholder.add(hwnd);
+        }
+    }
+
+    /// Értesítés egy eszköz nevében; csendes módban teljes képernyős alkalmazás alatt vár.
+    unsafe fn notify_device(&mut self, hwnd: HWND, id: &str, title: String, text: String, warning: bool) {
+        if self.settings.quiet_fullscreen && user_busy() {
+            self.pending.push((id.to_string(), title, text, warning));
+            let _ = SetTimer(hwnd, QUIET_TIMER, 30_000, None);
+            return;
+        }
+        // Az eszköz ikonja, vagy ha az nem látszik (rejtett, "egy ikon" mód), az első látható ikon.
+        let icon = match self.devices.iter().position(|d| d.state.id == id && d.shown) {
+            Some(i) => &self.devices[i],
+            None => match self.devices.iter().position(|d| d.shown) {
+                Some(i) => &self.devices[i],
+                None => &self.placeholder,
+            },
+        };
+        icon.notify(hwnd, &title, &text, warning);
+    }
+
+    /// A várakozó értesítések kiküldése, ha már nincs teljes képernyős alkalmazás.
+    unsafe fn flush_pending(&mut self, hwnd: HWND) {
+        if self.pending.is_empty() || (self.settings.quiet_fullscreen && user_busy()) {
+            return;
+        }
+        let _ = KillTimer(hwnd, QUIET_TIMER);
+        for (id, title, text, warning) in std::mem::take(&mut self.pending) {
+            self.notify_device(hwnd, &id, title, text, warning);
         }
     }
 }
@@ -365,11 +471,10 @@ pub unsafe fn run(hinst: HINSTANCE) -> Result<()> {
         receiver: worker::spawn(hwnd),
         settings: Settings::load(),
         next_uid: PLACEHOLDER_UID + 1,
+        last_update: None,
+        pending: Vec::new(),
     }));
-    with_app(|app| {
-        worker::set_updates_enabled(app.settings.update_mode != "off");
-        app.sync(hwnd);
-    });
+    with_app(|app| app.apply_settings(hwnd));
     register_power_notifications(hwnd);
 
     let mut msg = MSG::default();
@@ -386,18 +491,16 @@ fn with_app<R: Default>(f: impl FnOnce(&mut App) -> R) -> R {
 
 /// Újrarajzolja a látható (vagy épp megjelenítendő) ikonokat, ha az állapotuk, a téma vagy a
 /// méret változott. true, ha bármelyik változott.
-unsafe fn render_changed(hwnd: HWND, app: &mut App) -> bool {
+unsafe fn render_changed(hwnd: HWND, app: &mut App, visible: &[String]) -> bool {
     let size = GetSystemMetricsForDpi(SM_CXSMICON, GetDpiForWindow(hwnd)) as u32;
     let theme = Theme::current();
     let layout = Layout::from_key(&app.settings.icon_style);
-    let hidden = app.settings.hidden.clone();
-    let any_visible = app.devices.iter().any(|d| !hidden.contains(&d.state.id));
     // A rajzoló (D2D, DirectWrite, WIC) csak a rajzolás idejére él: ritkán kell, és így
     // üresjáratban nem foglal memóriát. Utána a fölösleges lapokat visszaadjuk a rendszernek.
     let mut renderer: Option<IconRenderer> = None;
     let mut changed = false;
     for icon in app.icons_mut() {
-        let wanted = if icon.is_placeholder() { !any_visible } else { !hidden.contains(&icon.state.id) };
+        let wanted = if icon.is_placeholder() { visible.is_empty() } else { visible.contains(&icon.state.id) };
         let key = IconKey::new(&icon.state, theme, size, layout);
         if !wanted || icon.key == Some(key) {
             continue;
@@ -429,7 +532,8 @@ unsafe fn render_changed(hwnd: HWND, app: &mut App) -> bool {
 /// Az eszközszálról érkezett állapotok beolvasása: új eszköz új ikont kap, a meglévők frissülnek.
 unsafe fn on_devices(hwnd: HWND) {
     let states = with_app(|app| {
-        let mut warnings = Vec::new();
+        let mut notes: Vec<(String, String, String, bool)> = Vec::new();
+        let threshold = app.settings.low_threshold;
         for state in app.receiver.try_iter().collect::<Vec<_>>() {
             let index = match app.devices.iter().position(|d| d.state.id == state.id) {
                 Some(i) => {
@@ -442,8 +546,15 @@ unsafe fn on_devices(hwnd: HWND) {
                     app.devices.len() - 1
                 }
             };
-            if let Some(t) = app.devices[index].low_battery_crossed() {
-                warnings.push((index, t));
+            let d = &mut app.devices[index];
+            if let Some(t) = d.low_battery_crossed(threshold) {
+                if app.settings.notify_low {
+                    let text = format!("{}: {}% maradt. Tedd töltőre.", d.state.name, d.state.level.unwrap_or(t));
+                    notes.push((d.state.id.clone(), format!("{} lemerülőben", d.state.name), text, true));
+                }
+            }
+            if d.full_reached() && app.settings.notify_full {
+                notes.push((d.state.id.clone(), format!("{} feltöltve", d.state.name), "100%, lecsatlakoztathatod a töltőről.".into(), false));
             }
         }
         app.sync(hwnd);
@@ -462,16 +573,23 @@ unsafe fn on_devices(hwnd: HWND) {
                 );
             }
         }
-        if app.settings.notify_low {
-            for (i, threshold) in warnings {
-                let d = &app.devices[i];
-                let text = format!("{}: {}% maradt.", d.state.name, d.state.level.unwrap_or(threshold));
-                d.notify(hwnd, &format!("Alacsony akkuszint ({threshold}%)"), &text, true);
-            }
+        for (id, title, text, warning) in notes {
+            app.notify_device(hwnd, &id, title, text, warning);
         }
+        app.flush_pending(hwnd);
+        app.last_update = Some(std::time::Instant::now());
         app.device_states()
     });
-    flyout::update(&states);
+    flyout::update(&states, Some(0));
+    settings_window::update_devices(&states);
+}
+
+/// A panel adatai: eszközök, nézet, hány másodperce volt az utolsó frissítés.
+fn flyout_data() -> (Vec<DeviceState>, bool, Option<u64>) {
+    APP.with_borrow(|app| match app {
+        Some(app) => (app.device_states(), app.settings.flyout_grid, app.last_update.map(|t| t.elapsed().as_secs())),
+        None => (Vec::new(), false, None),
+    })
 }
 
 /// A kattintott ikon (uID) helye a tálcán, a felugró panel elhelyezéséhez.
@@ -494,7 +612,7 @@ fn wide(s: &str) -> Vec<u16> {
 
 unsafe fn show_menu(hwnd: HWND, uid: u32, x: i32, y: i32) {
     let Ok(menu) = CreatePopupMenu() else { return };
-    let (settings, clicked, hidden_names) = with_app(|app| {
+    let (clicked, hidden_names) = with_app(|app| {
         let clicked = app.devices.iter().find(|d| d.uid == uid).map(|d| d.state.name.clone());
         let hidden: Vec<(usize, String)> = app
             .devices
@@ -503,7 +621,7 @@ unsafe fn show_menu(hwnd: HWND, uid: u32, x: i32, y: i32) {
             .filter(|(_, d)| app.settings.hidden.contains(&d.state.id))
             .map(|(i, d)| (i, d.state.name.clone()))
             .collect();
-        Some((app.settings.clone(), clicked, hidden))
+        Some((clicked, hidden))
     })
     .unwrap_or_default();
     // A menüszövegeknek a TrackPopupMenu végéig élniük kell.
@@ -520,6 +638,7 @@ unsafe fn show_menu(hwnd: HWND, uid: u32, x: i32, y: i32) {
         let _ = AppendMenuW(menu, MF_STRING | busy, ID_UPDATE, text(format!("Frissítés telepítése ({})", release.version)));
     }
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
+    let _ = AppendMenuW(menu, MF_STRING, ID_SETTINGS, w!("Beállítások…"));
     if let Some(name) = clicked {
         let _ = AppendMenuW(menu, MF_STRING, ID_HIDE, text(format!("{name} elrejtése")));
     }
@@ -531,20 +650,7 @@ unsafe fn show_menu(hwnd: HWND, uid: u32, x: i32, y: i32) {
             let _ = AppendMenuW(menu, MF_POPUP, sub.0 as usize, w!("Rejtett eszközök megjelenítése"));
         }
     }
-    if let Ok(sub) = CreatePopupMenu() {
-        for (i, (_, key, label)) in Layout::ALL.iter().enumerate() {
-            let _ = AppendMenuW(sub, MF_STRING | check(settings.icon_style == *key), ID_STYLE_BASE + i, text(label.to_string()));
-        }
-        let _ = AppendMenuW(menu, MF_POPUP, sub.0 as usize, w!("Ikon stílusa"));
-    }
     let _ = AppendMenuW(menu, MF_STRING | check(settings::autostart_enabled()), ID_AUTOSTART, w!("Indítás a Windows-zal"));
-    let _ = AppendMenuW(menu, MF_STRING | check(settings.notify_low), ID_NOTIFY_LOW, w!("Értesítés alacsony akkuszintnél"));
-    if let Ok(sub) = CreatePopupMenu() {
-        for (i, (key, label)) in UPDATE_MODES.iter().enumerate() {
-            let _ = AppendMenuW(sub, MF_STRING | check(settings.update_mode == *key), ID_UPDATE_MODE_BASE + i, text(label.to_string()));
-        }
-        let _ = AppendMenuW(menu, MF_POPUP, sub.0 as usize, w!("Frissítések"));
-    }
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
     let _ = AppendMenuW(menu, MF_STRING, ID_EXIT, w!("Kilépés"));
 
@@ -557,6 +663,11 @@ unsafe fn show_menu(hwnd: HWND, uid: u32, x: i32, y: i32) {
     on_command(hwnd, uid, cmd.0 as usize);
 }
 
+unsafe fn open_settings(hwnd: HWND) {
+    let devices = APP.with_borrow(|app| app.as_ref().map(|a| a.device_states()).unwrap_or_default());
+    settings_window::open(hwnd, devices);
+}
+
 unsafe fn on_command(hwnd: HWND, uid: u32, cmd: usize) {
     match cmd {
         0 => {}
@@ -564,10 +675,7 @@ unsafe fn on_command(hwnd: HWND, uid: u32, cmd: usize) {
             let _ = DestroyWindow(hwnd);
         }
         ID_AUTOSTART => settings::set_autostart(!settings::autostart_enabled()),
-        ID_NOTIFY_LOW => with_app(|app| {
-            app.settings.notify_low = !app.settings.notify_low;
-            app.settings.save();
-        }),
+        ID_SETTINGS => open_settings(hwnd),
         ID_HIDE => with_app(|app| {
             if let Some(d) = app.devices.iter().find(|d| d.uid == uid) {
                 app.settings.hidden.push(d.state.id.clone());
@@ -576,20 +684,6 @@ unsafe fn on_command(hwnd: HWND, uid: u32, cmd: usize) {
             }
         }),
         ID_UPDATE => start_install(hwnd),
-        _ if cmd >= ID_UPDATE_MODE_BASE => with_app(|app| {
-            if let Some((key, _)) = UPDATE_MODES.get(cmd - ID_UPDATE_MODE_BASE) {
-                app.settings.update_mode = key.to_string();
-                app.settings.save();
-                worker::set_updates_enabled(*key != "off");
-            }
-        }),
-        _ if cmd >= ID_STYLE_BASE => with_app(|app| {
-            if let Some((_, key, _)) = Layout::ALL.get(cmd - ID_STYLE_BASE) {
-                app.settings.icon_style = key.to_string();
-                app.settings.save();
-                app.sync(hwnd);
-            }
-        }),
         _ => with_app(|app| {
             if let Some(d) = cmd.checked_sub(ID_SHOW_BASE).and_then(|i| app.devices.get(i)) {
                 let id = d.state.id.clone();
@@ -617,7 +711,8 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                     }
                     NIN_SELECT | NIN_KEYSELECT => {
                         if let Some(rect) = icon_rect(hwnd, uid) {
-                            flyout::toggle(rect, with_app(|app| app.device_states()));
+                            let (devices, grid, updated) = flyout_data();
+                            flyout::toggle(hwnd, rect, devices, grid, updated);
                         }
                         worker::request_refresh();
                     }
@@ -633,6 +728,28 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             }
             WM_UPDATE => {
                 on_update(hwnd);
+                LRESULT(0)
+            }
+            flyout::WM_FLYOUT => {
+                match wparam.0 {
+                    flyout::FLYOUT_GRID => with_app(|app| {
+                        app.settings.flyout_grid = lparam.0 != 0;
+                        app.settings.save();
+                    }),
+                    flyout::FLYOUT_SETTINGS => open_settings(hwnd),
+                    _ => {}
+                }
+                LRESULT(0)
+            }
+            settings_window::WM_SETTINGS_CHANGED => {
+                with_app(|app| {
+                    app.settings = Settings::load();
+                    app.apply_settings(hwnd);
+                });
+                LRESULT(0)
+            }
+            WM_TIMER if wparam.0 == QUIET_TIMER => {
+                with_app(|app| app.flush_pending(hwnd));
                 LRESULT(0)
             }
             WM_UPDATE_READY => {
