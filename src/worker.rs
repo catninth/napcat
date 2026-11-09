@@ -28,6 +28,7 @@ use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 use crate::model::DeviceState;
 use crate::updater;
 use crate::providers::bt_pnp::BtPnp;
+use crate::providers::compx::Compx;
 use crate::providers::logitech_hidpp::LogitechHidpp;
 use crate::providers::{playstation::PlayStation, wired_detect::WiredDetect, xinput::XInput, Provider};
 
@@ -111,6 +112,7 @@ unsafe fn run(hwnd: HWND, tx: Sender<DeviceState>) {
         Box::new(XInput::default()),
         Box::new(LogitechHidpp::default()),
         Box::new(BtPnp::default()),
+        Box::new(Compx::default()),
     ];
     // Mikor esedékes a következő időzített olvasás providerenként (None: csak eseményre).
     let mut due: Vec<Option<Instant>> = vec![None; providers.len()];
