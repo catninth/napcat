@@ -30,13 +30,17 @@ pub enum Layout {
     Pie,
     /// Teljes szélességű glyph, alatta vékony töltöttségi sáv.
     Bar,
+    /// Mint a gyűrű, de a glyph helyén a szint száma (a terv "Százalék az ikonon" beállítása);
+    /// 100%-nál és ismeretlen szintnél a glyph marad.
+    Percent,
 }
 
 impl Layout {
-    pub const ALL: [(Layout, &'static str, &'static str); 3] = [
+    pub const ALL: [(Layout, &'static str, &'static str); 4] = [
         (Layout::Ring, "ring", "Gyűrű (design)"),
         (Layout::Pie, "pie", "Nagy glyph + sarokjelvény"),
         (Layout::Bar, "bar", "Nagy glyph + sáv"),
+        (Layout::Percent, "percent", "Gyűrű + százalék"),
     ];
 
     pub fn from_key(key: &str) -> Layout {
@@ -210,8 +214,13 @@ impl IconRenderer {
         let cut = Cut::new(rt, bg)?;
         let ring = rt.CreateSolidColorBrush(&theme.ring(dev), None)?;
         let full = D2D_RECT_F { left: 0.0, top: 0.0, right: s, bottom: s };
+        // Százalék mód: a gyűrű marad, a glyph helyére a szám kerül (legfeljebb két számjegy).
+        let number = match (layout, dev.connected, dev.level) {
+            (Layout::Percent, true, Some(l)) if l < 100 => Some(l),
+            _ => None,
+        };
         match layout {
-            Layout::Ring => {
+            Layout::Ring | Layout::Percent => {
                 let c = s / 2.0;
                 let sw = ring_width(s);
                 let r = c - sw / 2.0;
@@ -225,7 +234,9 @@ impl IconRenderer {
                 }
                 // A glyph a gyűrű belsejébe: a design vonalas rajza, ha van, különben a betűtípusé
                 // (a befoglaló téglalap átlója a belső átmérő; a sarkok lekerekítettek).
-                if let Some(d) = glyphs::path(dev.kind) {
+                if let Some(n) = number {
+                    self.number(rt, &n.to_string(), c, r - sw / 2.0, theme)?;
+                } else if let Some(d) = glyphs::path(dev.kind) {
                     // A design "Tálca méretek" táblázata: a 24-es glyph nagyítása és vonalvastagsága.
                     let (scale, width) = match s as u32 {
                         ..=16 => (1.0, 3.0),
@@ -304,6 +315,23 @@ impl IconRenderer {
         let layout = self.glyph_layout(&text, 100.0 * k)?;
         let origin = D2D_POINT_2F { x: cx - (ink.left + ink.width / 2.0) * k, y: cy - (ink.top + ink.height / 2.0) * k };
         rt.DrawTextLayout(origin, &layout, &brush, D2D1_DRAW_TEXT_OPTIONS_NO_SNAP);
+        Ok(())
+    }
+
+    /// A szint száma a gyűrű belsejében: félkövér, a belső körbe méretezve, a tálca szövegszínével.
+    unsafe fn number(&self, rt: &ID2D1DeviceContext, text: &str, c: f32, inner: f32, theme: Theme) -> Result<()> {
+        let wide: Vec<u16> = text.encode_utf16().collect();
+        let format = |size: f32| {
+            self.dwrite.CreateTextFormat(w!("Segoe UI Variable Display"), None, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size, w!(""))
+        };
+        // A tinta mérete 100 pt-nál, ebből a belső kör átlójához illesztett méret.
+        let layout = self.dwrite.CreateTextLayout(&wide, &format(100.0)?, 1000.0, 1000.0)?;
+        let oh = layout.GetOverhangMetrics()?;
+        let (iw, ih) = (1000.0 + oh.left + oh.right, 1000.0 + oh.top + oh.bottom);
+        let k = 2.0 * inner * 0.92 / (iw * iw + ih * ih).sqrt();
+        let layout = self.dwrite.CreateTextLayout(&wide, &format(100.0 * k)?, 1000.0, 1000.0)?;
+        let origin = D2D_POINT_2F { x: c - (-oh.left + iw / 2.0) * k, y: c - (-oh.top + ih / 2.0) * k };
+        rt.DrawTextLayout(origin, &layout, &rt.CreateSolidColorBrush(&theme.fg(1.0), None)?, D2D1_DRAW_TEXT_OPTIONS_NO_SNAP);
         Ok(())
     }
 
@@ -577,7 +605,7 @@ mod tests {
         unsafe {
             let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
             let mut r = IconRenderer::new().unwrap();
-            let variants = [("Gyűrű", Layout::Ring), ("Torta", Layout::Pie), ("Sáv", Layout::Bar)];
+            let variants = [("Gyűrű", Layout::Ring), ("Szám", Layout::Percent), ("Torta", Layout::Pie), ("Sáv", Layout::Bar)];
             let devices = [STATES[4], STATES[8], STATES[9], STATES[10], STATES[5], STATES[7]];
             let theme = Theme { light: false };
             let (size, zoom) = (16u32, 4.0f32);

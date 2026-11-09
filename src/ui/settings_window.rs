@@ -506,8 +506,8 @@ impl Ui<'_> {
         self.switch(right, cy, autostart, Act::Startup)?;
         let cy = self.row(&mut y, "Tálca mód", Some("Egy ikon a legsürgősebb eszközzel, vagy mindegyik külön"))?;
         self.segmented(right, cy, &[("one", "Egy ikon"), ("each", "Eszközönként")], &s.tray_mode, Act::TrayMode)?;
-        let cy = self.row(&mut y, "Ikon stílusa", Some("Gyűrű, vagy nagy ikon jelvénnyel / sávval"))?;
-        self.segmented(right, cy, &[("ring", "Gyűrű"), ("pie", "Jelvény"), ("bar", "Sáv")], &s.icon_style, Act::IconStyle)?;
+        let cy = self.row(&mut y, "Ikon stílusa", Some("Gyűrű, a szint száma, vagy nagy ikon jelvénnyel / sávval"))?;
+        self.segmented(right, cy, &[("ring", "Gyűrű"), ("percent", "Százalék"), ("pie", "Jelvény"), ("bar", "Sáv")], &s.icon_style, Act::IconStyle)?;
         let cy = self.row(&mut y, "Téma", None)?;
         self.segmented(right, cy, &[("system", "Rendszer"), ("dark", "Sötét"), ("light", "Világos")], &s.theme, Act::Theme)?;
         y += SECTION_GAP - ROW_GAP;
