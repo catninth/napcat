@@ -1,5 +1,6 @@
 //! Providerek: mindegyik egy eszközcsaládot kezel, és közös `DeviceState`-et ad vissza.
 
+pub mod bt_pnp;
 pub mod hid;
 pub mod logitech_hidpp;
 pub mod playstation;
