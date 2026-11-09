@@ -21,6 +21,7 @@ use windows::Win32::System::Threading::*;
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 
 use crate::model::DeviceState;
+use crate::providers::logitech_hidpp::LogitechHidpp;
 use crate::providers::{playstation::PlayStation, wired_detect::WiredDetect, xinput::XInput, Provider};
 
 /// A UI ablaknak küldött üzenet: új állapotok várnak a csatornán.
@@ -44,8 +45,12 @@ unsafe fn run(hwnd: HWND, tx: Sender<DeviceState>) {
     let Ok(changed) = CreateEventW(None, false, false, PCWSTR::null()) else { return };
     let _notify = register_hid_notification(changed);
 
-    let mut providers: Vec<Box<dyn Provider>> =
-        vec![Box::new(WiredDetect::default()), Box::new(PlayStation::default()), Box::new(XInput::default())];
+    let mut providers: Vec<Box<dyn Provider>> = vec![
+        Box::new(WiredDetect::default()),
+        Box::new(PlayStation::default()),
+        Box::new(XInput::default()),
+        Box::new(LogitechHidpp::default()),
+    ];
     // Mikor esedékes a következő időzített olvasás providerenként (None: csak eseményre).
     let mut due: Vec<Option<Instant>> = vec![None; providers.len()];
     let mut last: HashMap<String, DeviceState> = HashMap::new();

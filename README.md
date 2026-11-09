@@ -1,4 +1,4 @@
-# NapCat
+﻿# NapCat
 
 Battery levels of your wireless devices, right in the Windows taskbar.
 
@@ -12,15 +12,15 @@ no WebView, no UI framework, and practically zero CPU when idle.
 
 | Milestone | |
 |---|---|
-| M0 – tray icon, single instance, EcoQoS | done |
-| M1 – ring icon rendering (Direct2D) | done |
+| M0 â€“ tray icon, single instance, EcoQoS | done |
+| M1 â€“ ring icon rendering (Direct2D) | done |
 | Device thread + cable/dongle detection | done |
 | Installer (Inno Setup) + release workflow | done, not yet released |
 | Flyout panel (left click), tray menu, hide devices, autostart, low battery notifications | done |
 | PlayStation controllers (DualSense, DualSense Edge, DualShock 4; USB and Bluetooth) | done, untested on hardware |
 | Xbox controllers (XInput, approximate level) | done, untested on hardware |
 | Auto-update | planned |
-| Bluetooth battery, Logitech HID++, headsets, VGN, … | planned |
+| Bluetooth battery, Logitech HID++, headsets, VGN, â€¦ | planned |
 
 ## Building
 
@@ -37,7 +37,7 @@ the version in `Cargo.toml`.
 
 ## Tools
 
-- `tools/diag` – lists HID interfaces, Bluetooth battery properties and standard HID battery
+- `tools/diag` â€“ lists HID interfaces, Bluetooth battery properties and standard HID battery
   usages; `via` sends read-only VIA queries, `listen` passively logs vendor-defined reports.
-- `tools/webhid-logger.js` – paste into the DevTools console of a vendor's web driver to log its
+- `tools/webhid-logger.js` â€“ paste into the DevTools console of a vendor's web driver to log its
   WebHID traffic (used to find battery commands).

@@ -1,6 +1,7 @@
 //! Providerek: mindegyik egy eszközcsaládot kezel, és közös `DeviceState`-et ad vissza.
 
 pub mod hid;
+pub mod logitech_hidpp;
 pub mod playstation;
 pub mod wired_detect;
 pub mod xinput;

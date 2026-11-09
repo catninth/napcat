@@ -134,6 +134,26 @@ impl Device {
         }
     }
 
+    /// Egy kimenő report (az első bájt a report ID); false hiba vagy időtúllépés esetén.
+    pub fn write(&self, data: &[u8], timeout_ms: u32) -> bool {
+        unsafe {
+            let _ = ResetEvent(self.ev);
+            let mut ov = OVERLAPPED { hEvent: self.ev, ..Default::default() };
+            if let Err(e) = WriteFile(self.h, Some(data), None, Some(&mut ov)) {
+                if e.code() != ERROR_IO_PENDING.to_hresult() {
+                    return false;
+                }
+            }
+            let mut n = 0u32;
+            if WaitForSingleObject(self.ev, timeout_ms) != WAIT_OBJECT_0 {
+                let _ = CancelIoEx(self.h, Some(&ov));
+                let _ = GetOverlappedResult(self.h, &ov, &mut n, true);
+                return false;
+            }
+            GetOverlappedResult(self.h, &ov, &mut n, false).is_ok()
+        }
+    }
+
     /// Egy bejövő report (az első bájt a report ID), vagy None időtúllépéskor.
     pub fn read(&self, len: usize, timeout_ms: u32) -> Option<Vec<u8>> {
         let mut buf = vec![0u8; len];
