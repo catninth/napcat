@@ -83,6 +83,10 @@ thread_local! {
     static CLOSED_AT: Cell<u32> = const { Cell::new(0) };
 }
 
+pub fn is_open() -> bool {
+    FLYOUT.with_borrow(|f| f.is_some())
+}
+
 /// Megnyitja a panelt a tálcaikon (`anchor`) fölött, vagy bezárja, ha nyitva van.
 pub unsafe fn toggle(owner: HWND, anchor: RECT, devices: Vec<DeviceState>, grid: bool, updated: Option<u64>) {
     if let Some(hwnd) = FLYOUT.with_borrow(|f| f.as_ref().map(|f| f.hwnd)) {

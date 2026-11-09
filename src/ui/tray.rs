@@ -25,6 +25,7 @@ use std::time::Instant;
 
 use super::estimate::History;
 use super::flyout;
+use super::tooltip;
 use super::settings_window;
 use super::icon_render::{IconRenderer, Layout};
 use super::theme::{self, Theme};
@@ -204,7 +205,9 @@ impl TrayIcon {
             cbSize: size_of::<NOTIFYICONDATAW>() as u32,
             hWnd: hwnd,
             uID: self.uid,
-            uFlags: NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP,
+            // NIF_SHOWTIP nélkül a Windows nem a saját tooltipjét mutatja, hanem NIN_POPUPOPEN/CLOSE-t
+            // küld: ilyenkor a design gazdag tooltipje jelenik meg. A szöveg (NIF_TIP) az akadálymentességhez marad.
+            uFlags: NIF_MESSAGE | NIF_ICON | NIF_TIP,
             uCallbackMessage: WM_TRAY,
             hIcon: self.icon,
             ..Default::default()
@@ -749,19 +752,31 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 let uid = (lparam.0 as u32 >> 16) & 0xFFFF;
                 match event {
                     WM_CONTEXTMENU => {
+                        tooltip::hide();
                         let x = (wparam.0 & 0xFFFF) as i16 as i32;
                         let y = ((wparam.0 >> 16) & 0xFFFF) as i16 as i32;
                         show_menu(hwnd, uid, x, y);
                     }
                     NIN_SELECT | NIN_KEYSELECT => {
+                        tooltip::hide();
                         if let Some(rect) = icon_rect(hwnd, uid) {
                             let (devices, grid, updated) = flyout_data();
                             flyout::toggle(hwnd, rect, devices, grid, updated);
                         }
                         worker::request_refresh();
                     }
-                    // Rámutatás: az egér ébren van, érdemes frissíteni (a tooltip is friss lesz).
-                    WM_MOUSEMOVE | NIN_POPUPOPEN => worker::request_refresh(),
+                    // Rámutatás: a design gazdag tooltipje (minden eszköz egy pillantásra); az egér
+                    // ilyenkor ébren van, érdemes frissíteni is.
+                    NIN_POPUPOPEN => {
+                        worker::request_refresh();
+                        if !flyout::is_open() {
+                            if let Some(rect) = icon_rect(hwnd, uid) {
+                                tooltip::show(rect, flyout_data().0);
+                            }
+                        }
+                    }
+                    NIN_POPUPCLOSE => tooltip::hide(),
+                    WM_MOUSEMOVE => worker::request_refresh(),
                     _ => {}
                 }
                 LRESULT(0)
