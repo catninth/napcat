@@ -14,6 +14,8 @@ use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::DirectWrite::*;
 use windows::Win32::Graphics::Dwm::*;
+use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
+use windows::Win32::UI::Controls::MARGINS;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::ProcessStatus::K32EmptyWorkingSet;
@@ -24,7 +26,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use super::icon_render::{IconRenderer, Layout};
-use super::theme::Theme;
+use super::theme::{rgb, Theme};
 use crate::model::{ChargeState, DeviceState};
 
 // Méretek DIP-ben (96 DPI-n pixel).
@@ -41,6 +43,9 @@ struct Flyout {
     rt: Option<ID2D1HwndRenderTarget>,
     dpi: f32,
     anchor_bottom: i32,
+    /// Windows 11 rendszerháttér (áttetsző, a Windows saját felugró paneljeihez hasonló);
+    /// Windows 10-en egyszínű háttér.
+    backdrop: bool,
 }
 
 thread_local! {
@@ -129,15 +134,19 @@ unsafe fn open(anchor: RECT, devices: Vec<DeviceState>) -> Result<()> {
     let theme = Theme::current();
     set_dwm_attr(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND.0); // Win11; Win10-en hatástalan
     set_dwm_attr(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, (!theme.light) as i32);
+    // Rendszerháttér (Win11 22H2+): a kliensterületre kiterjesztett kereten át látszik, ahol a
+    // Direct2D átlátszót rajzol. Régebbi Windows-on a hívás hibát ad, ott egyszínű marad.
+    let backdrop = set_dwm_attr(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, DWMSBT_TRANSIENTWINDOW.0)
+        && DwmExtendFrameIntoClientArea(hwnd, &MARGINS { cxLeftWidth: -1, cxRightWidth: -1, cyTopHeight: -1, cyBottomHeight: -1 }).is_ok();
 
-    FLYOUT.set(Some(Flyout { hwnd, devices, renderer: IconRenderer::new()?, rt: None, dpi, anchor_bottom: pos.top + h }));
+    FLYOUT.set(Some(Flyout { hwnd, devices, renderer: IconRenderer::new()?, rt: None, dpi, anchor_bottom: pos.top + h, backdrop }));
     let _ = ShowWindow(hwnd, SW_SHOW);
     let _ = SetForegroundWindow(hwnd);
     Ok(())
 }
 
-unsafe fn set_dwm_attr(hwnd: HWND, attr: DWMWINDOWATTRIBUTE, value: i32) {
-    let _ = DwmSetWindowAttribute(hwnd, attr, &value as *const i32 as *const c_void, size_of::<i32>() as u32);
+unsafe fn set_dwm_attr(hwnd: HWND, attr: DWMWINDOWATTRIBUTE, value: i32) -> bool {
+    DwmSetWindowAttribute(hwnd, attr, &value as *const i32 as *const c_void, size_of::<i32>() as u32).is_ok()
 }
 
 unsafe fn paint(f: &mut Flyout) -> Result<()> {
@@ -145,15 +154,24 @@ unsafe fn paint(f: &mut Flyout) -> Result<()> {
     GetClientRect(f.hwnd, &mut rc)?;
     let size = D2D_SIZE_U { width: (rc.right - rc.left) as u32, height: (rc.bottom - rc.top) as u32 };
     if f.rt.is_none() {
-        let props = D2D1_RENDER_TARGET_PROPERTIES { dpiX: f.dpi, dpiY: f.dpi, ..Default::default() };
+        // Premultiplied alfa: az átlátszó pixeleken a rendszerháttér látszik.
+        let props = D2D1_RENDER_TARGET_PROPERTIES {
+            pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
+            dpiX: f.dpi,
+            dpiY: f.dpi,
+            ..Default::default()
+        };
         let hwnd_props = D2D1_HWND_RENDER_TARGET_PROPERTIES { hwnd: f.hwnd, pixelSize: size, presentOptions: D2D1_PRESENT_OPTIONS_NONE };
         f.rt = Some(f.renderer.d2d().CreateHwndRenderTarget(&props, &hwnd_props)?);
     }
     let rt = f.rt.as_ref().unwrap();
     rt.Resize(&size)?;
     let ctx: ID2D1DeviceContext = rt.cast()?;
+    if f.backdrop {
+        ctx.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE); // ClearType csak átlátszatlan háttéren
+    }
     ctx.BeginDraw();
-    draw_content(&ctx, &f.renderer, &f.devices, Theme::current())?;
+    draw_content(&ctx, &f.renderer, &f.devices, Theme::current(), !f.backdrop)?;
     if let Err(e) = ctx.EndDraw(None, None) {
         if e.code() == D2DERR_RECREATE_TARGET {
             f.rt = None;
@@ -162,10 +180,12 @@ unsafe fn paint(f: &mut Flyout) -> Result<()> {
     Ok(())
 }
 
-/// A panel tartalma DIP-ben; az ablak és az előnézeti teszt is ezt rajzolja.
-unsafe fn draw_content(ctx: &ID2D1DeviceContext, renderer: &IconRenderer, devices: &[DeviceState], theme: Theme) -> Result<()> {
+/// A panel tartalma DIP-ben; az ablak és az előnézeti teszt is ezt rajzolja. `opaque`: egyszínű
+/// háttér (Windows 10, előnézet); különben átlátszó, a rendszerháttér látszik át.
+unsafe fn draw_content(ctx: &ID2D1DeviceContext, renderer: &IconRenderer, devices: &[DeviceState], theme: Theme, opaque: bool) -> Result<()> {
     let text = Text { ctx, dwrite: renderer.dwrite() };
-    ctx.Clear(Some(&theme.panel()));
+    let bg = opaque.then(|| theme.panel());
+    ctx.Clear(Some(&bg.unwrap_or(rgb(0, 0.0))));
 
     // Fejléc: cím és összesítés.
     let charging = devices.iter().filter(|d| d.is_charging()).count();
@@ -183,7 +203,7 @@ unsafe fn draw_content(ctx: &ID2D1DeviceContext, renderer: &IconRenderer, device
         let y = HEADER + i as f32 * ROW;
         let ring_y = y + (ROW - RING) / 2.0;
         ctx.SetTransform(&Matrix3x2::translation(PAD + 4.0, ring_y));
-        renderer.draw(ctx, d, RING, theme, Layout::Ring, Some(theme.panel()))?;
+        renderer.draw(ctx, d, RING, theme, Layout::Ring, bg)?;
         ctx.SetTransform(&Matrix3x2::identity());
 
         let x = PAD + 4.0 + RING + 14.0;
@@ -279,7 +299,7 @@ mod tests {
                 };
                 let ctx: ID2D1DeviceContext = renderer.d2d().CreateWicBitmapRenderTarget(&bmp, &props).unwrap().cast().unwrap();
                 ctx.BeginDraw();
-                draw_content(&ctx, &renderer, &devices, Theme { light }).unwrap();
+                draw_content(&ctx, &renderer, &devices, Theme { light }, true).unwrap();
                 ctx.EndDraw(None, None).unwrap();
 
                 let path: Vec<u16> =
