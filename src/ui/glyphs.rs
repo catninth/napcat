@@ -60,16 +60,12 @@ fn tokenize(d: &str) -> Vec<Tok> {
     out
 }
 
-/// A NapCat app ikon rajzai (a "NapCat app ikon" design szerint). A nagy ikon rajzait csak a
-/// res/napcat.ico generálója használja.
-#[cfg_attr(not(test), allow(dead_code))]
+/// A NapCat app ikon rajzai (a "NapCat app ikon" design SVG-je szerint).
 pub mod app {
     /// Alvó macskafej, a (0, 0) középponthoz képest (kitöltött).
     pub const CAT_HEAD: &str = "M-18 6C-18-6-14-12-12-14L-14-26-4-18C-1.5-18.6 1.5-18.6 4-18L14-26 12-14C14-12 18-6 18 6 18 16 10 20 0 20-10 20-18 16-18 6Z";
     /// Csukott szemek (körvonal).
     pub const CAT_EYES: &str = "M-10 1Q-7 4.5-4 1M4 1Q7 4.5 10 1";
-    /// Orr (kitöltött).
-    pub const CAT_NOSE: &str = "M-1.8 7.5H1.8L0 9.8Z";
     /// "zz" a gyűrű résében, 100-as rácson.
     pub const ZZ: &str = "M20 26h6l-6 7h6M29 16h4l-4 4.6h4";
     /// Egyszínű tálcaikon macskája, 48-as rácson (kitöltött).

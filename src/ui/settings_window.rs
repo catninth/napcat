@@ -17,7 +17,7 @@ use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::ProcessStatus::K32EmptyWorkingSet;
 use windows::Win32::System::Threading::GetCurrentProcess;
-use windows::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow};
+use windows::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow, GetSystemMetricsForDpi};
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture, VK_ESCAPE};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -136,10 +136,27 @@ unsafe fn create(owner: HWND, devices: Vec<DeviceState>) -> Result<()> {
         dragging: None,
     }));
     apply_frame(hwnd);
+    set_window_icons(hwnd, dpi);
     place(hwnd, dpi);
     let _ = ShowWindow(hwnd, SW_SHOW);
     let _ = SetForegroundWindow(hwnd);
     Ok(())
+}
+
+/// Címsor és tálcagomb ikon: az app ikon a pontos méretben rajzolva (a .ico kicsinyítése helyett),
+/// így 16-24 px-en is látszik a macska és a "zz".
+unsafe fn set_window_icons(hwnd: HWND, dpi: f32) {
+    let Ok(renderer) = IconRenderer::new() else { return };
+    let accent = rgb(0x4CC2FF, 1.0);
+    for (which, metric) in [(ICON_SMALL, SM_CXSMICON), (ICON_BIG, SM_CXICON)] {
+        let size = GetSystemMetricsForDpi(metric, dpi as u32) as u32;
+        if let Ok(icon) = renderer.render_app_icon(size, accent) {
+            let old = SendMessageW(hwnd, WM_SETICON, WPARAM(which as usize), LPARAM(icon.0 as isize));
+            if old.0 != 0 {
+                let _ = DestroyIcon(HICON(old.0 as *mut c_void));
+            }
+        }
+    }
 }
 
 /// Címsor a design szerint: sötét/világos mód, a címsor színe az ablak háttere.
@@ -325,7 +342,8 @@ impl Ui<'_> {
         let (fg, sub) = (self.theme.fg(1.0), self.theme.sub());
         let right = W - MARGIN;
         let mut y = 24.0;
-        self.p.text("Beállítások", 24.0, DWRITE_FONT_WEIGHT_SEMI_BOLD, rect(MARGIN, y, 400.0, 32.0), fg, DWRITE_TEXT_ALIGNMENT_LEADING)?;
+        self.p.logo(MARGIN, y, 32.0)?;
+        self.p.text("Beállítások", 24.0, DWRITE_FONT_WEIGHT_SEMI_BOLD, rect(MARGIN + 44.0, y, 400.0, 32.0), fg, DWRITE_TEXT_ALIGNMENT_LEADING)?;
         y += 32.0 + SECTION_GAP;
 
         // Általános
@@ -594,6 +612,12 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 DefWindowProcW(hwnd, msg, wparam, lparam)
             }
             WM_DESTROY => {
+                for which in [ICON_SMALL, ICON_BIG] {
+                    let icon = SendMessageW(hwnd, WM_GETICON, WPARAM(which as usize), LPARAM(0));
+                    if icon.0 != 0 {
+                        let _ = DestroyIcon(HICON(icon.0 as *mut c_void));
+                    }
+                }
                 WINDOW.set(None);
                 let _ = K32EmptyWorkingSet(GetCurrentProcess());
                 LRESULT(0)

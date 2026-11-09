@@ -7,7 +7,6 @@ use windows::Win32::Graphics::DirectWrite::*;
 
 use super::glyphs;
 use super::icon_render::IconRenderer;
-use super::theme::Theme;
 
 /// A design ikonjai (24-es rács, körvonalas rajz).
 pub mod icon {
@@ -68,21 +67,18 @@ impl Painter<'_> {
         Ok(())
     }
 
-    /// A design logója: kiemelő színű, kb. 70%-os gyűrű.
-    pub unsafe fn logo(&self, x: f32, y: f32, size: f32, theme: Theme, accent: D2D1_COLOR_F) -> Result<()> {
-        let sw = size * 6.0 / 48.0;
-        let r = size * 19.0 / 48.0;
-        let (cx, cy) = (x + size / 2.0, y + size / 2.0);
-        let e = D2D1_ELLIPSE { point: D2D_POINT_2F { x: cx, y: cy }, radiusX: r, radiusY: r };
-        self.ctx.DrawEllipse(&e, &self.brush(&theme.track())?, sw, None);
-        // Az ív a (c, c) középpontra rajzol: eltolással kerül a helyére.
+    /// A NapCat app ikon (alvó macska a gyűrűben) `size` méretben, (x, y) bal felső sarokkal. Ez a
+    /// logó, ezért mindig a márkaszínnel (a design kékje), nem a kiemelő színnel.
+    pub unsafe fn logo(&self, x: f32, y: f32, size: f32) -> Result<()> {
+        let brand = D2D1_COLOR_F { r: 0x4C as f32 / 255.0, g: 0xC2 as f32 / 255.0, b: 1.0, a: 1.0 };
+        // Az ikon a (0, 0) ponttól rajzol: eltolással kerül a helyére (a görgetést megtartva).
         let mut old = windows::Foundation::Numerics::Matrix3x2::default();
         self.ctx.GetTransform(&mut old);
         let mut t = old;
         t.M31 += x;
         t.M32 += y;
         self.ctx.SetTransform(&t);
-        let res = self.renderer.arc(self.ctx, size / 2.0, r, sw, 0.7, &self.brush(&accent)?);
+        let res = self.renderer.draw_app_icon(self.ctx, size, brand);
         self.ctx.SetTransform(&old);
         res
     }

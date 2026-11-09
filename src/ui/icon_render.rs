@@ -116,48 +116,33 @@ impl IconRenderer {
         }
     }
 
-    /// A NapCat app ikon `s` méretben (a design méretenkénti vonalvastagságaival): lekerekített
-    /// sötét négyzet, 75%-os kiemelő színű gyűrű, alvó macska, nagy méretben "zz".
-    #[cfg_attr(not(test), allow(dead_code))] // a res/napcat.ico generálója (app_icon teszt) használja
+    /// A NapCat app ikon `s` méretben, a design SVG-je szerint (100-as rács): lekerekített sötét
+    /// négyzet, 75%-os kiemelő színű gyűrű, alvó macska csukott szemmel, "zz" a gyűrű résében.
+    /// Minden méretben ugyanaz a rajz; a vékony vonalak kis méretben is legalább ~1 px-esek maradnak,
+    /// hogy a szemek és a "zz" ne tűnjenek el.
     pub unsafe fn draw_app_icon(&self, rt: &ID2D1DeviceContext, s: f32, accent: D2D1_COLOR_F) -> Result<()> {
         let k = s / 100.0;
-        // (gyűrű, szemek vonala, zz, orr) a 100-as rácson; 0 vonal: a szemek kis méretben elmaradnak.
-        let (ring, eyes, zz, nose) = match s as u32 {
-            256.. => (8.0, 2.0, true, true),
-            128.. => (8.0, 2.0, true, false),
-            64.. => (8.0, 2.4, true, false),
-            48.. => (9.0, 2.8, true, false),
-            40.. => (9.5, 3.0, false, false),
-            32.. => (10.0, 3.4, false, false),
-            24.. => (11.0, 0.0, false, false),
-            20.. => (11.5, 0.0, false, false),
-            _ => (12.0, 0.0, false, false),
-        };
+        let px = |units: f32, min_px: f32| (units * k).max(min_px);
         let (bg, head) = (rgb(0x17181C, 1.0), rgb(0xF2F2F3, 1.0));
         let tile = D2D1_ROUNDED_RECT { rect: D2D_RECT_F { left: k, top: k, right: 99.0 * k, bottom: 99.0 * k }, radiusX: 23.0 * k, radiusY: 23.0 * k };
         rt.FillRoundedRectangle(&tile, &rt.CreateSolidColorBrush(&bg, None)?);
-        let border_w = if s <= 32.0 { 2.0 } else { 1.0 } * k;
-        rt.DrawRoundedRectangle(&tile, &rt.CreateSolidColorBrush(&rgb(0xFFFFFF, if s <= 32.0 { 0.12 } else { 0.1 }), None)?, border_w, None);
+        rt.DrawRoundedRectangle(&tile, &rt.CreateSolidColorBrush(&rgb(0xFFFFFF, 0.1), None)?, px(1.0, 0.5), None);
         let accent_brush = rt.CreateSolidColorBrush(&accent, None)?;
-        self.arc(rt, 50.0 * k, 30.0 * k, ring * k, 0.75, &accent_brush)?;
+        self.arc(rt, 50.0 * k, 30.0 * k, px(8.0, 1.5), 0.75, &accent_brush)?;
         // A macska a (50, 53) középpontra, 0,8-szoros méretben.
         let (cs, cx, cy) = (0.8 * k, 50.0 * k, 53.0 * k);
         let head_geo = glyphs::filled_geometry(&self.d2d, glyphs::app::CAT_HEAD, cs, cx, cy)?;
         rt.FillGeometry(&head_geo, &rt.CreateSolidColorBrush(&head, None)?, None);
-        let bg_brush = rt.CreateSolidColorBrush(&bg, None)?;
-        if eyes > 0.0 {
-            let eyes_geo = glyphs::geometry(&self.d2d, glyphs::app::CAT_EYES, cs, cx, cy)?;
-            rt.DrawGeometry(&eyes_geo, &bg_brush, eyes * cs, &self.stroke_style(&[])?);
-        }
-        if nose {
-            let nose_geo = glyphs::filled_geometry(&self.d2d, glyphs::app::CAT_NOSE, cs, cx, cy)?;
-            rt.FillGeometry(&nose_geo, &bg_brush, None);
-        }
-        if zz {
-            let zz_geo = glyphs::geometry(&self.d2d, glyphs::app::ZZ, k, 0.0, 0.0)?;
-            rt.DrawGeometry(&zz_geo, &accent_brush, 2.4 * k, &self.stroke_style(&[])?);
-        }
+        let eyes_geo = glyphs::geometry(&self.d2d, glyphs::app::CAT_EYES, cs, cx, cy)?;
+        rt.DrawGeometry(&eyes_geo, &rt.CreateSolidColorBrush(&bg, None)?, px(2.0 * 0.8, 0.8), &self.stroke_style(&[])?);
+        let zz_geo = glyphs::geometry(&self.d2d, glyphs::app::ZZ, k, 0.0, 0.0)?;
+        rt.DrawGeometry(&zz_geo, &accent_brush, px(2.4, 1.0), &self.stroke_style(&[])?);
         Ok(())
+    }
+
+    /// Az app ikon HICON-ként (pl. ablak címsorához), `size` px-ben élesen rajzolva.
+    pub fn render_app_icon(&self, size: u32, accent: D2D1_COLOR_F) -> Result<HICON> {
+        unsafe { to_hicon(&self.render_with(size, |rt, s| self.draw_app_icon(rt, s, accent))?, size) }
     }
 
     /// Rajzolás egy `size` méretű átlátszó bitképre; premultiplied BGRA pixelek.

@@ -277,8 +277,8 @@ unsafe fn draw_content(
 
     // Fejléc: logó, cím, összesítés, nézetváltó és beállítások gomb.
     let mut y = PAD;
-    p.logo(PAD, y + 5.0, 22.0, theme, accent)?;
-    p.text("NapCat", 15.0, DWRITE_FONT_WEIGHT_SEMI_BOLD, rect(PAD + 32.0, y, 80.0, HEAD), fg, DWRITE_TEXT_ALIGNMENT_LEADING)?;
+    p.logo(PAD, y + 2.0, 28.0)?;
+    p.text("NapCat", 15.0, DWRITE_FONT_WEIGHT_SEMI_BOLD, rect(PAD + 36.0, y, 80.0, HEAD), fg, DWRITE_TEXT_ALIGNMENT_LEADING)?;
     let charging = devices.iter().filter(|d| d.is_charging()).count();
     let summary = match (devices.len(), charging) {
         (0, _) => "nincs eszköz".to_string(),
@@ -286,7 +286,7 @@ unsafe fn draw_content(
         (n, c) => format!("{n} eszköz · {c} tölt"),
     };
     let title_w = p.text_width("NapCat", 15.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
-    p.text(&summary, 12.0, DWRITE_FONT_WEIGHT_NORMAL, rect(PAD + 32.0 + title_w + 8.0, y, 160.0, HEAD), sub, DWRITE_TEXT_ALIGNMENT_LEADING)?;
+    p.text(&summary, 12.0, DWRITE_FONT_WEIGHT_NORMAL, rect(PAD + 36.0 + title_w + 8.0, y, 160.0, HEAD), sub, DWRITE_TEXT_ALIGNMENT_LEADING)?;
     let settings_r = rect(W - PAD - 32.0, y, 32.0, 32.0);
     let view_r = rect(W - PAD - 66.0, y, 32.0, 32.0);
     button(Hit::View, view_r, &mut hits)?;
