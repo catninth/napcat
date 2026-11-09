@@ -104,27 +104,17 @@ impl IconRenderer {
             }
         }
 
-        // Eszköz glyph középen, a tálca szövegszínével.
+        // Eszköz glyph középen, a tálca szövegszínével. A betű valódi (tinta) kiterjedését mérjük,
+        // és akkorára méretezzük, hogy a gyűrű belsejét kitöltse; a betűtípus saját térköze így nem
+        // zsugorítja tovább 16 px-en.
         let glyph = rt.CreateSolidColorBrush(&theme.fg(if dev.connected { 1.0 } else { 0.45 }), None)?;
-        let format = self.dwrite.CreateTextFormat(
-            self.glyph_font,
-            None,
-            DWRITE_FONT_WEIGHT_NORMAL,
-            DWRITE_FONT_STYLE_NORMAL,
-            DWRITE_FONT_STRETCH_NORMAL,
-            (s * if s <= 20.0 { 0.56 } else { 0.5 }).round(),
-            w!(""),
-        )?;
-        format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
-        format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
-        rt.DrawText(
-            &[glyph_char(dev.kind)],
-            &format,
-            &D2D_RECT_F { left: 0.0, top: 0.0, right: s, bottom: s },
-            &glyph,
-            D2D1_DRAW_TEXT_OPTIONS_NONE,
-            DWRITE_MEASURING_MODE_NATURAL,
-        );
+        let text = [glyph_char(dev.kind)];
+        let ink = self.glyph_ink(&text, 100.0)?;
+        let inner = r - sw / 2.0 - (s * 0.04).max(0.5); // kis rés a gyűrű és a glyph között
+        let k = 2.0 * inner / (ink.width * ink.width + ink.height * ink.height).sqrt();
+        let layout = self.glyph_layout(&text, 100.0 * k)?;
+        let origin = D2D_POINT_2F { x: c - (ink.left + ink.width / 2.0) * k, y: c - (ink.top + ink.height / 2.0) * k };
+        rt.DrawTextLayout(origin, &layout, &glyph, D2D1_DRAW_TEXT_OPTIONS_NONE);
 
         // Töltés: villám jelvény a jobb alsó sarokban. A körvonal és a villám "kivágás"
         // (átlátszóvá tett pixelek), így bármilyen tálcaháttéren olvasható.
@@ -152,6 +142,27 @@ impl IconRenderer {
         Ok(())
     }
 
+    unsafe fn glyph_layout(&self, text: &[u16], size: f32) -> Result<IDWriteTextLayout> {
+        let format = self.dwrite.CreateTextFormat(
+            self.glyph_font,
+            None,
+            DWRITE_FONT_WEIGHT_NORMAL,
+            DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL,
+            size,
+            w!(""),
+        )?;
+        self.dwrite.CreateTextLayout(text, &format, size * 2.0, size * 2.0)
+    }
+
+    /// A glyph tintájának befoglaló téglalapja a layout origójához képest, `size` betűméretnél.
+    unsafe fn glyph_ink(&self, text: &[u16], size: f32) -> Result<Ink> {
+        let layout = self.glyph_layout(text, size)?;
+        let oh = layout.GetOverhangMetrics()?;
+        let (box_w, box_h) = (layout.GetMaxWidth(), layout.GetMaxHeight());
+        Ok(Ink { left: -oh.left, top: -oh.top, width: box_w + oh.right + oh.left, height: box_h + oh.bottom + oh.top })
+    }
+
     /// Lekerekített végű vonalstílus; `dashes` nem üres esetén szaggatott (a vonalvastagság egységében).
     unsafe fn stroke_style(&self, dashes: &[f32]) -> Result<ID2D1StrokeStyle> {
         let props = D2D1_STROKE_STYLE_PROPERTIES1 {
@@ -169,11 +180,18 @@ impl IconRenderer {
     }
 }
 
-/// Kis méretben vastagabb gyűrű, hogy 16 px-en is olvasható maradjon (design: 16 px -> 2,3 px).
+struct Ink {
+    left: f32,
+    top: f32,
+    width: f32,
+    height: f32,
+}
+
+/// Kis méretben arányaiban vastagabb gyűrű, hogy 16 px-en is olvasható maradjon (16 px -> 2 px),
+/// de ne vegye el a helyet a glyph elől.
 fn ring_width(s: f32) -> f32 {
     let units = match s as u32 {
-        ..=16 => 7.0,
-        17..=20 => 6.0,
+        ..=20 => 6.0,
         21..=24 => 5.0,
         _ => 4.0,
     };
