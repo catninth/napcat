@@ -619,7 +619,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                         if let Some(rect) = icon_rect(hwnd, uid) {
                             flyout::toggle(rect, with_app(|app| app.device_states()));
                         }
+                        worker::request_refresh();
                     }
+                    // Rámutatás: az egér ébren van, érdemes frissíteni (a tooltip is friss lesz).
+                    WM_MOUSEMOVE | NIN_POPUPOPEN => worker::request_refresh(),
                     _ => {}
                 }
                 LRESULT(0)

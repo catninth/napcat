@@ -2,15 +2,19 @@
 
 use std::ffi::c_void;
 use std::mem::size_of;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
-use windows::core::PCWSTR;
+use windows::core::{GUID, PCWSTR};
 use windows::Win32::Devices::DeviceAndDriverInstallation::*;
 use windows::Win32::Devices::HumanInterfaceDevice::*;
+use windows::Win32::Devices::Properties::*;
 use windows::Win32::Foundation::*;
 use windows::Win32::Storage::FileSystem::*;
 use windows::Win32::System::Threading::*;
 use windows::Win32::System::IO::*;
 
+#[derive(Clone)]
 pub struct HidInterface {
     /// Nullával lezárt eszközútvonal.
     pub path: Vec<u16>,
@@ -30,12 +34,48 @@ impl HidInterface {
     }
 }
 
-/// Az összes jelenlévő HID interfész.
+/// Az összes jelenlévő HID interfész. Egy olvasási körön belül (2 mp) a providerek ugyanazt a
+/// listát kapják, hogy a felsorolás ne fusson le többször.
 pub fn interfaces() -> Vec<HidInterface> {
-    unsafe { paths().iter().filter_map(|p| info(p)).collect() }
+    static CACHE: Mutex<Option<(Instant, Vec<HidInterface>)>> = Mutex::new(None);
+    let Ok(mut cache) = CACHE.lock() else { return Vec::new() };
+    if let Some((at, list)) = cache.as_ref() {
+        if at.elapsed() < Duration::from_secs(2) {
+            return list.clone();
+        }
+    }
+    let list: Vec<HidInterface> = unsafe { paths().iter().filter_map(|(p, desc)| info(p, desc.as_deref())).collect() };
+    *cache = Some((Instant::now(), list.clone()));
+    list
 }
 
-unsafe fn paths() -> Vec<Vec<u16>> {
+/// Sorozatszámot csak ezektől kérünk (az azonosítóhoz kell); a lekérdezés egyes eszközöknél
+/// (pl. energiatakarékos USB) másodpercekig is eltarthat.
+const SERIAL_VIDS: [u16; 3] = [0x054C, 0x3554, 0x046D];
+
+/// DEVPKEY_Device_BusReportedDeviceDesc: a termék neve, ahogy az eszköz csatlakozáskor megadta.
+/// A Windows eltárolja, így nem kell érte az eszközhöz fordulni.
+const BUS_DESC: DEVPROPKEY = DEVPROPKEY { fmtid: GUID::from_u128(0x540b947e_8b40_45bc_a8a2_6a0b894cbda2), pid: 4 };
+
+/// A HID csomóponton általában nincs ilyen, a szülőn (az USB interfészen) igen.
+unsafe fn bus_desc(devinst: u32) -> Option<String> {
+    let mut parent = 0u32;
+    let parent = (CM_Get_Parent(&mut parent, devinst, 0) == CR_SUCCESS).then_some(parent);
+    [Some(devinst), parent].into_iter().flatten().find_map(|node| {
+        let mut ty = DEVPROPTYPE(0);
+        let mut buf = [0u8; 512];
+        let mut size = buf.len() as u32;
+        let cr = CM_Get_DevNode_PropertyW(node, &BUS_DESC, &mut ty, Some(buf.as_mut_ptr()), &mut size, 0);
+        if cr != CR_SUCCESS {
+            return None;
+        }
+        let w: Vec<u16> = buf[..size as usize].chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        Some(wide_string(&w)).filter(|s| !s.is_empty())
+    })
+}
+
+/// Útvonalak, mellettük a Windows által eltárolt terméknév (ha van).
+unsafe fn paths() -> Vec<(Vec<u16>, Option<String>)> {
     let guid = HidD_GetHidGuid();
     let Ok(set) = SetupDiGetClassDevsW(Some(&guid), PCWSTR::null(), None, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE) else {
         return Vec::new();
@@ -52,12 +92,13 @@ unsafe fn paths() -> Vec<Vec<u16>> {
         let mut buf = vec![0u64; (need as usize).div_ceil(8)];
         let detail = buf.as_mut_ptr() as *mut SP_DEVICE_INTERFACE_DETAIL_DATA_W;
         (*detail).cbSize = size_of::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>() as u32;
-        if SetupDiGetDeviceInterfaceDetailW(set, &ifd, Some(detail), need, None, None).is_err() {
+        let mut dev = SP_DEVINFO_DATA { cbSize: size_of::<SP_DEVINFO_DATA>() as u32, ..Default::default() };
+        if SetupDiGetDeviceInterfaceDetailW(set, &ifd, Some(detail), need, None, Some(&mut dev)).is_err() {
             continue;
         }
         let ptr = (*detail).DevicePath.as_ptr();
         let len = (0..).take_while(|&k| *ptr.add(k) != 0).count();
-        paths.push(std::slice::from_raw_parts(ptr, len + 1).to_vec());
+        paths.push((std::slice::from_raw_parts(ptr, len + 1).to_vec(), bus_desc(dev.DevInst)));
     }
     let _ = SetupDiDestroyDeviceInfoList(set);
     paths
@@ -69,7 +110,7 @@ fn wide_string(buf: &[u16]) -> String {
 }
 
 /// 0 hozzáféréssel a rendszer által foglalt billentyűzet/egér interfészek is megnyithatók.
-unsafe fn info(path: &[u16]) -> Option<HidInterface> {
+unsafe fn info(path: &[u16], desc: Option<&str>) -> Option<HidInterface> {
     let h = CreateFileW(
         PCWSTR(path.as_ptr()),
         0,
@@ -82,10 +123,18 @@ unsafe fn info(path: &[u16]) -> Option<HidInterface> {
     .ok()?;
     let mut attrs = HIDD_ATTRIBUTES { Size: size_of::<HIDD_ATTRIBUTES>() as u32, ..Default::default() };
     let ok = HidD_GetAttributes(h, &mut attrs).as_bool();
-    let mut prod = [0u16; 128];
-    let _ = HidD_GetProductString(h, prod.as_mut_ptr() as *mut c_void, (prod.len() * 2) as u32);
+    let product = match desc {
+        Some(d) => d.to_string(),
+        None => {
+            let mut prod = [0u16; 128];
+            let _ = HidD_GetProductString(h, prod.as_mut_ptr() as *mut c_void, (prod.len() * 2) as u32);
+            wide_string(&prod)
+        }
+    };
     let mut serial = [0u16; 128];
-    let _ = HidD_GetSerialNumberString(h, serial.as_mut_ptr() as *mut c_void, (serial.len() * 2) as u32);
+    if SERIAL_VIDS.contains(&attrs.VendorID) {
+        let _ = HidD_GetSerialNumberString(h, serial.as_mut_ptr() as *mut c_void, (serial.len() * 2) as u32);
+    }
     let mut caps = HIDP_CAPS::default();
     let mut pp = PHIDP_PREPARSED_DATA::default();
     if HidD_GetPreparsedData(h, &mut pp).as_bool() {
@@ -97,7 +146,7 @@ unsafe fn info(path: &[u16]) -> Option<HidInterface> {
         path: path.to_vec(),
         vid: attrs.VendorID,
         pid: attrs.ProductID,
-        product: wide_string(&prod),
+        product,
         serial: wide_string(&serial),
         usage_page: caps.UsagePage,
         usage: caps.Usage,
@@ -182,6 +231,26 @@ impl Device {
         let mut buf = vec![0u8; len];
         buf[0] = id;
         unsafe { HidD_GetFeature(self.h, buf.as_mut_ptr() as *mut c_void, len as u32).as_bool().then_some(buf) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Interfészenkénti lekérdezési idő (`cargo test hid_timing -- --ignored --nocapture`).
+    #[test]
+    #[ignore = "a csatlakoztatott hardvertől függ"]
+    fn hid_timing() {
+        let t = Instant::now();
+        let all = unsafe { paths() };
+        println!("felsorolás: {:.1?}", t.elapsed());
+        for (p, desc) in all {
+            let t = Instant::now();
+            let i = unsafe { info(&p, desc.as_deref()) };
+            let name = i.map(|i| format!("{:04X}:{:04X} {} 0x{:04X}", i.vid, i.pid, i.product, i.usage_page)).unwrap_or_default();
+            println!("{:>8.1?} {name}  [{}]", t.elapsed(), if desc.is_some() { "tárolt név" } else { "eszköztől" });
+        }
     }
 }
 

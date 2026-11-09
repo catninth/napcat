@@ -59,14 +59,24 @@ fn parse_battery(r: &[u8]) -> Option<(u8, ChargeState)> {
 
 /// None: az egér alszik vagy nem érhető el; Some: a friss akkuállapot.
 fn read(i: &HidInterface) -> Option<(u8, ChargeState)> {
-    let dev = Device::open(&i.path)?;
-    let online = transfer(&dev, GET_MOUSE_ONLINE, &[])?;
+    use crate::worker::log;
+    let Some(dev) = Device::open(&i.path) else {
+        log("compx: a vevő nem nyitható meg");
+        return None;
+    };
+    let Some(online) = transfer(&dev, GET_MOUSE_ONLINE, &[]) else {
+        log("compx: a vevő nem válaszol");
+        return None;
+    };
     if online[6] == 0 {
-        return None; // alszik
+        log("compx: az egér alszik");
+        return None;
     }
     let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos()).to_le_bytes();
     transfer(&dev, HANDSHAKE, &[seed[0], seed[1], seed[2], seed[3], 0, 0, 0, 0])?;
-    parse_battery(&transfer(&dev, GET_BATTERY_LEVEL, &[])?)
+    let battery = transfer(&dev, GET_BATTERY_LEVEL, &[]).and_then(|r| parse_battery(&r));
+    log(&format!("compx: akku {battery:?}"));
+    battery
 }
 
 /// "VGN Dragonfly 4K Receiver" -> "VGN Dragonfly".

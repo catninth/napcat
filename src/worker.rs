@@ -74,6 +74,24 @@ pub fn log(msg: &str) {
     }
 }
 
+/// Azonnali újraolvasás kérése (pl. a tálcaikon fölé vitt egérnél: az egér ilyenkor biztosan ébren
+/// van, így az alvás közben nem válaszoló vezeték nélküli egerek is kiolvashatók). 15 mp-enként legfeljebb egyszer.
+pub fn request_refresh() {
+    use std::sync::atomic::AtomicU64;
+    static LAST: AtomicU64 = AtomicU64::new(0);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    if now.saturating_sub(LAST.load(Ordering::Relaxed)) < 15 {
+        return;
+    }
+    LAST.store(now, Ordering::Relaxed);
+    let wake = WAKE.load(Ordering::Relaxed);
+    if wake != 0 {
+        unsafe {
+            let _ = SetEvent(HANDLE(wake as *mut c_void));
+        }
+    }
+}
+
 /// Energiaállapot a UI száltól; csak változáskor ébreszti az eszközszálat.
 pub fn set_power(paused: bool, on_battery: bool) {
     let pause_changed = PAUSED.swap(paused, Ordering::Relaxed) != paused;
