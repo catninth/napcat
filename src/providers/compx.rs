@@ -117,7 +117,13 @@ impl Provider for Compx {
                 Some((l, c)) => (Some(l), c),
                 None => (None, ChargeState::Unknown),
             };
-            out.push(DeviceState { level, charge, connected: true, ..DeviceState::disconnected(&id, &entry.0, DeviceKind::Mouse) });
+            out.push(DeviceState {
+                level,
+                charge,
+                connected: true,
+                hw: Some((i.vid, i.pid)),
+                ..DeviceState::disconnected(&id, &entry.0, DeviceKind::Mouse)
+            });
         }
         self.connected = out.len();
         self.any_unknown = out.iter().any(|d| d.level.is_none());

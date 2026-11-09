@@ -2,6 +2,7 @@
 
 pub mod bt_pnp;
 pub mod compx;
+pub mod custom;
 pub mod hid;
 pub mod logitech_hidpp;
 pub mod playstation;

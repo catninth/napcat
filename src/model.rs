@@ -29,6 +29,9 @@ pub struct DeviceState {
     pub level_approx: bool,
     pub charge: ChargeState,
     pub connected: bool,
+    /// USB/HID azonosító (VID, PID), ha ismert: ebből tudja az Eszközök oldal, hogy a Windows által
+    /// észlelt eszközök közül melyik szerepel már a NapCat-ben.
+    pub hw: Option<(u16, u16)>,
 }
 
 impl DeviceState {
@@ -42,6 +45,7 @@ impl DeviceState {
             level_approx: false,
             charge: ChargeState::Unknown,
             connected: false,
+            hw: None,
         }
     }
 

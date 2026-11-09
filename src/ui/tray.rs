@@ -25,6 +25,7 @@ use super::settings_window;
 use super::icon_render::{IconRenderer, Layout};
 use super::theme::{self, Theme};
 use crate::model::{ChargeState, DeviceKind, DeviceState};
+use crate::providers::custom;
 use crate::settings::{self, Settings};
 use crate::updater;
 use crate::worker::{self, WM_DEVICES, WM_UPDATE};
@@ -328,9 +329,15 @@ impl App {
         self.devices.iter().map(|d| d.state.clone()).collect()
     }
 
+    /// A NapCat-ben megjelenő eszközök (az Eszközök oldalon eltávolítottak nélkül).
+    fn active_states(&self) -> Vec<DeviceState> {
+        self.devices.iter().filter(|d| !self.settings.removed.contains(&d.state.id)).map(|d| d.state.clone()).collect()
+    }
+
     /// A tálcán látszó eszközök: a nem rejtettek, "egy ikon" módban csak a legsürgősebb.
     fn visible_ids(&self) -> Vec<String> {
-        let candidates = self.devices.iter().filter(|d| !self.settings.hidden.contains(&d.state.id));
+        let s = &self.settings;
+        let candidates = self.devices.iter().filter(|d| !s.hidden.contains(&d.state.id) && !s.removed.contains(&d.state.id));
         if self.settings.tray_mode == "one" {
             let threshold = self.settings.low_threshold;
             candidates.min_by_key(|d| urgency(&d.state, threshold)).map(|d| vec![d.state.id.clone()]).unwrap_or_default()
@@ -345,6 +352,19 @@ impl App {
         theme::configure(&s.theme, s.use_accent, s.custom_accent, s.ring_accent);
         worker::set_updates_enabled(s.update_mode != "off");
         worker::set_poll_secs(s.poll_secs);
+        // Kézzel hozzáadott eszközök: a törölteket eltávolítjuk, az újakat az eszközszál olvassa be.
+        custom::set(s.custom.clone());
+        let custom_ids: Vec<String> = s.custom.iter().map(|c| c.id()).collect();
+        let mut dropped = Vec::new();
+        self.devices.retain_mut(|d| {
+            let keep = !d.state.id.starts_with("custom-") || custom_ids.contains(&d.state.id);
+            if !keep {
+                dropped.push(d.uid);
+                d.remove(hwnd);
+            }
+            keep
+        });
+        worker::refresh_now();
         for icon in self.icons_mut() {
             icon.key = None; // szín vagy elrendezés változhatott: újrarajzolás
         }
@@ -354,9 +374,15 @@ impl App {
     /// Melyik ikon látszódjon: a látható eszközök, és a helyőrző, ha egy sem látszik.
     unsafe fn sync(&mut self, hwnd: HWND) {
         let visible = self.visible_ids();
-        // "Egy ikon" módban a tooltip minden (nem rejtett) eszközt felsorol.
+        // "Egy ikon" módban a tooltip minden (nem rejtett, nem eltávolított) eszközt felsorol.
         let summary = (self.settings.tray_mode == "one").then(|| {
-            let lines: Vec<String> = self.devices.iter().filter(|d| !self.settings.hidden.contains(&d.state.id)).map(|d| d.state.tooltip()).collect();
+            let s = &self.settings;
+            let lines: Vec<String> = self
+                .devices
+                .iter()
+                .filter(|d| !s.hidden.contains(&d.state.id) && !s.removed.contains(&d.state.id))
+                .map(|d| d.state.tooltip())
+                .collect();
             lines.join("\n")
         });
         for d in self.devices.iter_mut() {
@@ -582,16 +608,16 @@ unsafe fn on_devices(hwnd: HWND) {
         }
         app.flush_pending(hwnd);
         app.last_update = Some(std::time::Instant::now());
-        app.device_states()
+        (app.active_states(), app.device_states())
     });
-    flyout::update(&states, Some(0));
-    settings_window::update_devices(&states);
+    flyout::update(&states.0, Some(0));
+    settings_window::update_devices(&states.1);
 }
 
 /// A panel adatai: eszközök, nézet, hány másodperce volt az utolsó frissítés.
 fn flyout_data() -> (Vec<DeviceState>, bool, Option<u64>) {
     APP.with_borrow(|app| match app {
-        Some(app) => (app.device_states(), app.settings.flyout_grid, app.last_update.map(|t| t.elapsed().as_secs())),
+        Some(app) => (app.active_states(), app.settings.flyout_grid, app.last_update.map(|t| t.elapsed().as_secs())),
         None => (Vec::new(), false, None),
     })
 }
@@ -667,9 +693,9 @@ unsafe fn show_menu(hwnd: HWND, uid: u32, x: i32, y: i32) {
     on_command(hwnd, uid, cmd.0 as usize);
 }
 
-unsafe fn open_settings(hwnd: HWND) {
+unsafe fn open_settings(hwnd: HWND, page: settings_window::Page) {
     let devices = APP.with_borrow(|app| app.as_ref().map(|a| a.device_states()).unwrap_or_default());
-    settings_window::open(hwnd, devices);
+    settings_window::open(hwnd, devices, page);
 }
 
 unsafe fn on_command(hwnd: HWND, uid: u32, cmd: usize) {
@@ -679,7 +705,7 @@ unsafe fn on_command(hwnd: HWND, uid: u32, cmd: usize) {
             let _ = DestroyWindow(hwnd);
         }
         ID_AUTOSTART => settings::set_autostart(!settings::autostart_enabled()),
-        ID_SETTINGS => open_settings(hwnd),
+        ID_SETTINGS => open_settings(hwnd, settings_window::Page::Settings),
         ID_HIDE => with_app(|app| {
             if let Some(d) = app.devices.iter().find(|d| d.uid == uid) {
                 app.settings.hidden.push(d.state.id.clone());
@@ -740,16 +766,21 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                         app.settings.flyout_grid = lparam.0 != 0;
                         app.settings.save();
                     }),
-                    flyout::FLYOUT_SETTINGS => open_settings(hwnd),
+                    flyout::FLYOUT_SETTINGS => open_settings(hwnd, settings_window::Page::Settings),
+                    flyout::FLYOUT_DEVICES => open_settings(hwnd, settings_window::Page::Devices),
                     _ => {}
                 }
                 LRESULT(0)
             }
             settings_window::WM_SETTINGS_CHANGED => {
-                with_app(|app| {
+                let states = with_app(|app| {
                     app.settings = Settings::load();
                     app.apply_settings(hwnd);
+                    (app.active_states(), app.device_states())
                 });
+                // Eltávolított vagy törölt eszköz: a panel és az ablak listája is frissül.
+                flyout::update(&states.0, None);
+                settings_window::update_devices(&states.1);
                 LRESULT(0)
             }
             WM_TIMER if wparam.0 == QUIET_TIMER => {

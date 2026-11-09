@@ -29,6 +29,7 @@ use crate::model::DeviceState;
 use crate::updater;
 use crate::providers::bt_pnp::BtPnp;
 use crate::providers::compx::Compx;
+use crate::providers::custom::Custom;
 use crate::providers::logitech_hidpp::LogitechHidpp;
 use crate::providers::{playstation::PlayStation, wired_detect::WiredDetect, xinput::XInput, Provider};
 
@@ -99,6 +100,16 @@ pub fn request_refresh() {
     }
 }
 
+/// Azonnali teljes újraolvasás (pl. egy eszköz hozzáadása vagy eltávolítása után).
+pub fn refresh_now() {
+    let wake = WAKE.load(Ordering::Relaxed);
+    if wake != 0 {
+        unsafe {
+            let _ = SetEvent(HANDLE(wake as *mut c_void));
+        }
+    }
+}
+
 /// Energiaállapot a UI száltól; csak változáskor ébreszti az eszközszálat.
 pub fn set_power(paused: bool, on_battery: bool) {
     let pause_changed = PAUSED.swap(paused, Ordering::Relaxed) != paused;
@@ -138,6 +149,7 @@ unsafe fn run(hwnd: HWND, tx: Sender<DeviceState>) {
         Box::new(LogitechHidpp::default()),
         Box::new(BtPnp::default()),
         Box::new(Compx::default()),
+        Box::new(Custom),
     ];
     // Mikor esedékes a következő időzített olvasás providerenként (None: csak eseményre).
     let mut due: Vec<Option<Instant>> = vec![None; providers.len()];

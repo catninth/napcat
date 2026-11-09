@@ -25,7 +25,8 @@ use super::draw::{contains, rect, Painter};
 use super::icon_render::{IconRenderer, Layout};
 use super::theme::{self, rgb, Theme};
 use crate::model::{ChargeState, DeviceKind, DeviceState};
-use crate::settings::{self, Settings};
+use crate::providers::custom::{self, Candidate};
+use crate::settings::{self, CustomDevice, Settings};
 
 /// Üzenet a tálca ablaknak: a beállítások megváltoztak (újraolvasás a fájlból).
 pub const WM_SETTINGS_CHANGED: u32 = WM_APP + 6;
@@ -62,14 +63,35 @@ enum Act {
     NotifyFull,
     Quiet,
     Poll(u32),
+    /// Oldalváltás (Beállítások / Eszközök).
+    Page(Page),
+    /// Eszköz eltávolítása a NapCat-ből (kézzel hozzáadottnál törlés, különben elrejtés mindenhonnan).
+    Remove(String),
+    /// Korábban eltávolított eszköz visszaadása.
+    Restore(String),
+    /// Észlelt, nem támogatott eszköz hozzáadása (csak csatlakozás).
+    Add(usize),
+    /// Új Bluetooth eszköz párosítása a Windowsban.
+    PairBluetooth,
+}
+
+/// Az ablak oldalai.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Page {
+    Settings,
+    Devices,
 }
 
 struct Window {
     hwnd: HWND,
     owner: HWND,
+    page: Page,
     settings: Settings,
     autostart: bool,
+    /// Minden ismert eszköz, az eltávolítottak is (azok az Eszközök oldalon visszaadhatók).
     devices: Vec<DeviceState>,
+    /// A Windows által észlelt, a NapCat-ben nem szereplő eszközök.
+    candidates: Vec<Candidate>,
     renderer: IconRenderer,
     rt: Option<ID2D1HwndRenderTarget>,
     dpi: f32,
@@ -84,14 +106,33 @@ thread_local! {
     static WINDOW: RefCell<Option<Window>> = const { RefCell::new(None) };
 }
 
-/// Megnyitja (vagy előtérbe hozza) a beállítások ablakot.
-pub unsafe fn open(owner: HWND, devices: Vec<DeviceState>) {
-    if let Some(hwnd) = WINDOW.with_borrow(|w| w.as_ref().map(|w| w.hwnd)) {
+/// Megnyitja (vagy előtérbe hozza) az ablakot a kért oldalon.
+pub unsafe fn open(owner: HWND, devices: Vec<DeviceState>, page: Page) {
+    let existing = WINDOW.with_borrow_mut(|w| {
+        let w = w.as_mut()?;
+        set_page(w, page);
+        Some(w.hwnd)
+    });
+    if let Some(hwnd) = existing {
         let _ = ShowWindow(hwnd, SW_RESTORE);
         let _ = SetForegroundWindow(hwnd);
         return;
     }
-    let _ = create(owner, devices);
+    let _ = create(owner, devices, page);
+}
+
+unsafe fn set_page(w: &mut Window, page: Page) {
+    w.page = page;
+    w.scroll = 0.0;
+    w.candidates = candidates_for(&w.devices);
+    let title = if page == Page::Devices { w!("NapCat – Eszközök") } else { w!("NapCat – Beállítások") };
+    let _ = SetWindowTextW(w.hwnd, title);
+    let _ = InvalidateRect(w.hwnd, None, false);
+}
+
+/// A hozzáadható eszközök: ami a Windowsban látszik, de egyik NapCat eszköz sem az (VID/PID szerint).
+fn candidates_for(devices: &[DeviceState]) -> Vec<Candidate> {
+    custom::candidates().into_iter().filter(|c| !devices.iter().any(|d| d.hw == Some((c.vid, c.pid)))).collect()
 }
 
 /// Friss eszközlista egy nyitott ablaknak.
@@ -99,6 +140,9 @@ pub unsafe fn update_devices(devices: &[DeviceState]) {
     WINDOW.with_borrow_mut(|w| {
         if let Some(w) = w {
             w.devices = devices.to_vec();
+            if w.page == Page::Devices {
+                w.candidates = candidates_for(&w.devices);
+            }
             let _ = InvalidateRect(w.hwnd, None, false);
         }
     });
@@ -106,7 +150,7 @@ pub unsafe fn update_devices(devices: &[DeviceState]) {
 
 const STYLE: WINDOW_STYLE = WINDOW_STYLE(WS_OVERLAPPED.0 | WS_CAPTION.0 | WS_SYSMENU.0 | WS_MINIMIZEBOX.0);
 
-unsafe fn create(owner: HWND, devices: Vec<DeviceState>) -> Result<()> {
+unsafe fn create(owner: HWND, devices: Vec<DeviceState>, page: Page) -> Result<()> {
     let hinst = GetModuleHandleW(None)?;
     let class = w!("NapCatSettings");
     let wc = WNDCLASSW {
@@ -124,8 +168,10 @@ unsafe fn create(owner: HWND, devices: Vec<DeviceState>) -> Result<()> {
     WINDOW.set(Some(Window {
         hwnd,
         owner,
+        page,
         settings,
         autostart: settings::autostart_enabled(),
+        candidates: Vec::new(),
         devices,
         renderer: IconRenderer::new()?,
         rt: None,
@@ -138,6 +184,11 @@ unsafe fn create(owner: HWND, devices: Vec<DeviceState>) -> Result<()> {
     apply_frame(hwnd);
     set_window_icons(hwnd, dpi);
     place(hwnd, dpi);
+    WINDOW.with_borrow_mut(|w| {
+        if let Some(w) = w {
+            set_page(w, page);
+        }
+    });
     let _ = ShowWindow(hwnd, SW_SHOW);
     let _ = SetForegroundWindow(hwnd);
     Ok(())
@@ -225,6 +276,31 @@ unsafe fn on_act(w: &mut Window, act: Act) {
         Act::NotifyFull => s.notify_full = !s.notify_full,
         Act::Quiet => s.quiet_fullscreen = !s.quiet_fullscreen,
         Act::Poll(secs) => s.poll_secs = secs,
+        Act::Page(page) => return set_page(w, page),
+        Act::Remove(id) => {
+            if let Some(pos) = s.custom.iter().position(|c| c.id() == id) {
+                // A kézzel hozzáadott eszköz megszűnik, újra az észlelt eszközök között jelenik meg.
+                s.custom.remove(pos);
+                w.devices.retain(|d| d.id != id);
+                w.candidates = candidates_for(&w.devices);
+            } else if !s.removed.contains(&id) {
+                s.removed.push(id.clone());
+            }
+            s.hidden.retain(|h| *h != id);
+        }
+        Act::Restore(id) => s.removed.retain(|r| *r != id),
+        Act::Add(i) => {
+            let Some(c) = w.candidates.get(i).cloned() else { return };
+            let custom = CustomDevice { vid: c.vid, pid: c.pid, product: c.product.clone(), kind: custom::kind_to_str(c.kind).into() };
+            if !s.custom.iter().any(|x| x.id() == custom.id()) {
+                s.custom.push(custom);
+            }
+            w.candidates.remove(i);
+        }
+        Act::PairBluetooth => {
+            windows::Win32::UI::Shell::ShellExecuteW(None, w!("open"), w!("ms-settings:bluetooth"), None, None, SW_SHOWNORMAL);
+            return;
+        }
     }
     changed(w);
 }
@@ -338,6 +414,84 @@ impl Ui<'_> {
         Ok(())
     }
 
+    /// Gomb a jobb szélen: elsődleges (kiemelő színnel) vagy másodlagos (semleges).
+    unsafe fn button(&mut self, right: f32, cy: f32, label: &str, primary: bool, act: Act) -> Result<()> {
+        let w = self.p.text_width(label, 12.5, DWRITE_FONT_WEIGHT_MEDIUM)? + 28.0;
+        let r = rect(right - 16.0 - w, cy - 16.0, w, 32.0);
+        let (bg, fg) = if primary { (self.accent, self.theme.on_accent()) } else { (self.theme.segment_selected(), self.theme.fg(1.0)) };
+        self.p.fill(r, 6.0, bg)?;
+        self.p.text(label, 12.5, DWRITE_FONT_WEIGHT_MEDIUM, r, fg, DWRITE_TEXT_ALIGNMENT_CENTER)?;
+        self.hits.push((r, act));
+        Ok(())
+    }
+
+    /// Egy eszköz sora a gyűrűs ikonjával, nevével és egy alsorral; a sor közepének y-ját adja.
+    unsafe fn device_row(&mut self, y: &mut f32, d: &DeviceState, sub: &str) -> Result<f32> {
+        self.p.fill(rect(MARGIN, *y, W - 2.0 * MARGIN, 52.0), 8.0, self.theme.row())?;
+        self.at(MARGIN + 14.0, *y + 10.0);
+        self.p.renderer.draw(self.p.ctx, d, 32.0, self.theme, Layout::Ring, Some(self.theme.row()))?;
+        self.reset();
+        self.p.text(&d.name, 13.5, DWRITE_FONT_WEIGHT_NORMAL, rect(MARGIN + 60.0, *y + 8.0, 440.0, 20.0), self.theme.fg(1.0), DWRITE_TEXT_ALIGNMENT_LEADING)?;
+        self.p.text(sub, 12.0, DWRITE_FONT_WEIGHT_NORMAL, rect(MARGIN + 60.0, *y + 27.0, 440.0, 18.0), self.theme.sub(), DWRITE_TEXT_ALIGNMENT_LEADING)?;
+        let cy = *y + 26.0;
+        *y += 52.0 + ROW_GAP;
+        Ok(cy)
+    }
+
+    /// Az Eszközök oldal: a NapCat eszközei (eltávolítás), és a Windows által észlelt, még nem
+    /// megjelenített eszközök (hozzáadás).
+    unsafe fn build_devices(&mut self, s: &Settings, devices: &[DeviceState], candidates: &[Candidate]) -> Result<f32> {
+        let fg = self.theme.fg(1.0);
+        let right = W - MARGIN;
+        let mut y = 24.0;
+        self.p.logo(MARGIN, y, 32.0)?;
+        self.p.text("Eszközök", 24.0, DWRITE_FONT_WEIGHT_SEMI_BOLD, rect(MARGIN + 44.0, y, 300.0, 32.0), fg, DWRITE_TEXT_ALIGNMENT_LEADING)?;
+        self.button(right + 16.0, y + 16.0, "‹ Beállítások", false, Act::Page(Page::Settings))?;
+        y += 32.0 + SECTION_GAP;
+
+        // A NapCat-ben megjelenő eszközök.
+        self.section(&mut y, "A NapCat-ben")?;
+        let active: Vec<&DeviceState> = devices.iter().filter(|d| !s.removed.contains(&d.id)).collect();
+        if active.is_empty() {
+            self.row(&mut y, "Még nincs eszköz", None)?;
+        }
+        for d in active {
+            let custom = s.custom.iter().any(|c| c.id() == d.id);
+            let sub = match (custom, d.connected) {
+                (true, true) => "Kézzel hozzáadva · csatlakoztatva (akkuszint nem elérhető)",
+                (true, false) => "Kézzel hozzáadva · nincs csatlakoztatva",
+                (false, _) => device_conn(d),
+            };
+            let cy = self.device_row(&mut y, d, sub)?;
+            self.button(right, cy, "Eltávolítás", false, Act::Remove(d.id.clone()))?;
+        }
+        y += SECTION_GAP - ROW_GAP;
+
+        // Hozzáadható: korábban eltávolított eszközök és a Windows által észlelt, ismeretlen eszközök.
+        self.section(&mut y, "Észlelt eszközök")?;
+        let removed: Vec<&DeviceState> = devices.iter().filter(|d| s.removed.contains(&d.id)).collect();
+        if removed.is_empty() && candidates.is_empty() {
+            self.row(&mut y, "Nincs több észlelt eszköz", Some("Csatlakoztass egy eszközt, és itt megjelenik"))?;
+        }
+        for d in removed {
+            let cy = self.device_row(&mut y, d, "Korábban eltávolítva")?;
+            self.button(right, cy, "Hozzáadás", true, Act::Restore(d.id.clone()))?;
+        }
+        for (i, c) in candidates.iter().enumerate() {
+            let preview = DeviceState { connected: true, ..DeviceState::disconnected("", &c.product, c.kind) };
+            let sub = format!("USB / vevő · {:04X}:{:04X} · csak a csatlakozás látszik", c.vid, c.pid);
+            let cy = self.device_row(&mut y, &preview, &sub)?;
+            self.button(right, cy, "Hozzáadás", true, Act::Add(i))?;
+        }
+        y += SECTION_GAP - ROW_GAP;
+
+        // Új Bluetooth eszköz párosítása a Windowsban (utána itt, vagy magától megjelenik).
+        self.section(&mut y, "Bluetooth")?;
+        let cy = self.row(&mut y, "Új Bluetooth eszköz párosítása", Some("A Windows Bluetooth beállításaiban; utána a NapCat magától felismeri"))?;
+        self.button(right, cy, "Párosítás", false, Act::PairBluetooth)?;
+        Ok(y + 32.0 - ROW_GAP)
+    }
+
     unsafe fn build(&mut self, s: &Settings, autostart: bool, devices: &[DeviceState]) -> Result<f32> {
         let (fg, sub) = (self.theme.fg(1.0), self.theme.sub());
         let right = W - MARGIN;
@@ -416,10 +570,11 @@ impl Ui<'_> {
 
         // Eszközök a tálcán
         self.section(&mut y, "Eszközök a tálcán")?;
-        if devices.is_empty() {
+        let shown: Vec<&DeviceState> = devices.iter().filter(|d| !s.removed.contains(&d.id)).collect();
+        if shown.is_empty() {
             self.row(&mut y, "Még nincs ismert eszköz", None)?;
         }
-        for d in devices {
+        for d in shown {
             self.p.fill(rect(MARGIN, y, W - 2.0 * MARGIN, 52.0), 8.0, self.theme.row())?;
             self.at(MARGIN + 14.0, y + 10.0);
             self.p.renderer.draw(self.p.ctx, d, 32.0, self.theme, Layout::Ring, Some(self.theme.row()))?;
@@ -429,6 +584,8 @@ impl Ui<'_> {
             self.switch(right, y + 26.0, !s.hidden.contains(&d.id), Act::Device(d.id.clone()))?;
             y += 52.0 + ROW_GAP;
         }
+        let cy = self.row(&mut y, "Eszközök hozzáadása és eltávolítása", Some("A Windows által észlelt eszközök listája"))?;
+        self.button(right, cy, "Eszközök kezelése", false, Act::Page(Page::Devices))?;
         y += SECTION_GAP - ROW_GAP;
 
         // Értesítések
@@ -493,7 +650,10 @@ unsafe fn paint(w: &mut Window) -> Result<()> {
     // A görgetést egy eltolással kezeljük; a rajzoló segédek a jelenlegi transzformációra rajzolnak.
     let mut ui = Ui { p: Painter { ctx: &ctx, renderer: &w.renderer }, theme, accent: theme.accent(), hits: Vec::new(), scroll: w.scroll };
     ui.reset();
-    let result = ui.build(&w.settings, w.autostart, &w.devices);
+    let result = match w.page {
+        Page::Settings => ui.build(&w.settings, w.autostart, &w.devices),
+        Page::Devices => ui.build_devices(&w.settings, &w.devices, &w.candidates),
+    };
     w.hits = std::mem::take(&mut ui.hits);
     if let Ok(h) = result {
         w.content_h = h;

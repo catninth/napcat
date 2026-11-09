@@ -508,7 +508,7 @@ mod tests {
     use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
 
     fn dev(kind: DeviceKind, level: Option<u8>, charge: ChargeState, connected: bool) -> DeviceState {
-        DeviceState { id: "test".into(), name: "Teszt".into(), kind, level, level_approx: false, charge, connected }
+        DeviceState { id: "test".into(), name: "Teszt".into(), kind, level, level_approx: false, charge, connected, hw: None }
     }
 
     const STATES: &[fn() -> DeviceState] = &[

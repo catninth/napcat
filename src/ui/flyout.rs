@@ -23,7 +23,6 @@ use windows::Win32::System::SystemInformation::GetTickCount;
 use windows::Win32::System::Threading::GetCurrentProcess;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_ESCAPE};
-use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use super::draw::{contains, icon, rect, Painter};
@@ -35,6 +34,7 @@ use crate::model::{ChargeState, DeviceState};
 pub const WM_FLYOUT: u32 = WM_APP + 5;
 pub const FLYOUT_GRID: usize = 1;
 pub const FLYOUT_SETTINGS: usize = 2;
+pub const FLYOUT_DEVICES: usize = 3;
 
 // Méretek DIP-ben (96 DPI-n pixel), a design szerint.
 const W: f32 = 380.0;
@@ -392,7 +392,10 @@ unsafe fn on_click(hwnd: HWND, hit: Hit) {
             let _ = DestroyWindow(hwnd);
         }
         Hit::Pair => {
-            ShellExecuteW(None, w!("open"), w!("ms-settings:bluetooth"), None, None, SW_SHOWNORMAL);
+            // A NapCat Eszközök oldala: észlelt eszközök hozzáadása, eltávolítás, Bluetooth párosítás.
+            if let Some(owner) = FLYOUT.with_borrow(|f| f.as_ref().map(|f| f.owner)) {
+                let _ = PostMessageW(owner, WM_FLYOUT, WPARAM(FLYOUT_DEVICES), LPARAM(0));
+            }
             let _ = DestroyWindow(hwnd);
         }
     }
@@ -421,6 +424,7 @@ mod tests {
                 level_approx: false,
                 charge,
                 connected,
+                hw: None,
             };
             let devices = vec![
                 dev("DualShock 4", DeviceKind::Controller, Some(12), ChargeState::Discharging, true),

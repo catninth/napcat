@@ -9,10 +9,42 @@ use std::path::PathBuf;
 use windows::core::{w, PCWSTR};
 use windows::Win32::System::Registry::*;
 
+/// Kézzel hozzáadott eszköz: a NapCat nem ismeri a protokollját, ezért csak a csatlakozást mutatja.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CustomDevice {
+    pub vid: u16,
+    pub pid: u16,
+    /// A HID termék neve (ugyanaz a VID/PID több módot is jelölhet, pl. kábel és dongle).
+    pub product: String,
+    /// "keyboard", "mouse", "headset", "controller" vagy "other".
+    pub kind: String,
+}
+
+impl CustomDevice {
+    pub fn id(&self) -> String {
+        format!("custom-{:04x}-{:04x}-{}", self.vid, self.pid, self.product.to_lowercase().replace(' ', "-"))
+    }
+
+    fn encode(&self) -> String {
+        format!("{:04x}|{:04x}|{}|{}", self.vid, self.pid, self.product.replace(['|', '"'], ""), self.kind)
+    }
+
+    fn decode(s: &str) -> Option<CustomDevice> {
+        let mut p = s.split('|');
+        let vid = u16::from_str_radix(p.next()?, 16).ok()?;
+        let pid = u16::from_str_radix(p.next()?, 16).ok()?;
+        Some(CustomDevice { vid, pid, product: p.next()?.to_string(), kind: p.next().unwrap_or("other").to_string() })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
-    /// A tálcán elrejtett eszközök azonosítói.
+    /// A tálcán elrejtett eszközök azonosítói (a panelen és a beállításokban látszanak).
     pub hidden: Vec<String>,
+    /// Az Eszközök oldalon eltávolított eszközök: sehol nem látszanak, amíg vissza nem adod őket.
+    pub removed: Vec<String>,
+    /// Kézzel hozzáadott, nem támogatott eszközök (csak csatlakozás).
+    pub custom: Vec<CustomDevice>,
     /// Lemerülés figyelmeztetés a küszöbnél (és 5%-nál).
     pub notify_low: bool,
     /// A lemerülés figyelmeztetés küszöbe (%), 5-30.
@@ -47,6 +79,8 @@ impl Default for Settings {
     fn default() -> Settings {
         Settings {
             hidden: Vec::new(),
+            removed: Vec::new(),
+            custom: Vec::new(),
             notify_low: true,
             low_threshold: 15,
             notify_full: true,
@@ -62,6 +96,30 @@ impl Default for Settings {
             pin_tip_shown: false,
             flyout_grid: false,
         }
+    }
+}
+
+/// `["a", "b"]` -> ["a", "b"]
+fn parse_list(value: &str) -> Vec<String> {
+    value
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .split(',')
+        .map(|v| v.trim().trim_matches('"').to_string())
+        .filter(|v| !v.is_empty())
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn custom_device_roundtrip() {
+        let c = CustomDevice { vid: 0x3142, pid: 0x0a80, product: "fifine Microphone".into(), kind: "headset".into() };
+        assert_eq!(CustomDevice::decode(&c.encode()), Some(c.clone()));
+        assert_eq!(parse_list(&format!("[\"{}\", \"x\"]", c.encode())).len(), 2);
+        assert_eq!(c.id(), "custom-3142-0a80-fifine-microphone");
     }
 }
 
@@ -92,15 +150,9 @@ impl Settings {
                 "update_mode" => s.update_mode = text,
                 "pin_tip_shown" => s.pin_tip_shown = value == "true",
                 "flyout_grid" => s.flyout_grid = value == "true",
-                "hidden" => {
-                    s.hidden = value
-                        .trim_start_matches('[')
-                        .trim_end_matches(']')
-                        .split(',')
-                        .map(|v| v.trim().trim_matches('"').to_string())
-                        .filter(|v| !v.is_empty())
-                        .collect()
-                }
+                "hidden" => s.hidden = parse_list(value),
+                "removed" => s.removed = parse_list(value),
+                "custom" => s.custom = parse_list(value).iter().filter_map(|v| CustomDevice::decode(v)).collect(),
                 _ => {}
             }
         }
@@ -112,14 +164,17 @@ impl Settings {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let hidden: Vec<String> = self.hidden.iter().map(|h| format!("\"{}\"", h.replace('"', ""))).collect();
+        let list = |items: Vec<String>| items.iter().map(|h| format!("\"{}\"", h.replace('"', ""))).collect::<Vec<_>>().join(", ");
+        let hidden = list(self.hidden.clone());
+        let removed = list(self.removed.clone());
+        let custom_devices = list(self.custom.iter().map(CustomDevice::encode).collect());
         let q = |s: &str| format!("\"{}\"", s.replace('"', ""));
-        let custom = self.custom_accent.map_or("\"\"".to_string(), |c| format!("\"#{c:06X}\""));
+        let accent = self.custom_accent.map_or("\"\"".to_string(), |c| format!("\"#{c:06X}\""));
         let text = format!(
             "# NapCat beállítások\n\
              notify_low = {}\nlow_threshold = {}\nnotify_full = {}\nquiet_fullscreen = {}\n\
              tray_mode = {}\nicon_style = {}\ntheme = {}\nuse_accent = {}\ncustom_accent = {}\nring_accent = {}\n\
-             poll_secs = {}\nupdate_mode = {}\npin_tip_shown = {}\nflyout_grid = {}\nhidden = [{}]\n",
+             poll_secs = {}\nupdate_mode = {}\npin_tip_shown = {}\nflyout_grid = {}\nhidden = [{}]\nremoved = [{}]\ncustom = [{}]\n",
             self.notify_low,
             self.low_threshold,
             self.notify_full,
@@ -128,13 +183,15 @@ impl Settings {
             q(&self.icon_style),
             q(&self.theme),
             self.use_accent,
-            custom,
+            accent,
             self.ring_accent,
             self.poll_secs,
             q(&self.update_mode),
             self.pin_tip_shown,
             self.flyout_grid,
-            hidden.join(", ")
+            hidden,
+            removed,
+            custom_devices
         );
         let _ = std::fs::write(path, text);
     }

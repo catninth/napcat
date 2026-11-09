@@ -108,7 +108,16 @@ impl Provider for PlayStation {
                 None => (None, ChargeState::Unknown),
             };
             self.seen.insert(id.clone(), name.to_string());
-            out.push(DeviceState { id, name: name.into(), kind: DeviceKind::Controller, level, level_approx: false, charge, connected: true });
+            out.push(DeviceState {
+                id,
+                name: name.into(),
+                kind: DeviceKind::Controller,
+                level,
+                level_approx: false,
+                charge,
+                connected: true,
+                hw: Some((i.vid, i.pid)),
+            });
         }
         self.connected = out.len();
         for (id, name) in &self.seen {
