@@ -29,6 +29,9 @@ const KNOWN: &[Known] = &[
     Known { vid: 0x342D, pid: 0xE487, product: "R75Pro", link: Link::Cable, id: "rk-r75pro", name: "Royal Kludge R75 Pro", kind: DeviceKind::Keyboard },
     Known { vid: 0x342D, pid: 0xE487, product: "RK2.4G Dongle", link: Link::Dongle, id: "rk-r75pro", name: "Royal Kludge R75 Pro", kind: DeviceKind::Keyboard },
     Known { vid: 0x3554, pid: 0xF505, product: "VGN Dragonfly 4K Receiver", link: Link::Dongle, id: "vgn-dragonfly", name: "VGN Dragonfly", kind: DeviceKind::Mouse },
+    // A G435 Lightspeed vevője akkuszintet nem ad (G HUB sem támogatja); csak Bluetooth-on ismert a szint.
+    Known { vid: 0x046D, pid: 0x0ADF, product: "G435 Wireless Gaming Headset", link: Link::Dongle, id: "logi-g435", name: "Logitech G435", kind: DeviceKind::Headset },
+    Known { vid: 0x046D, pid: 0x0ACB, product: "G435 Wireless Gaming Headset", link: Link::Dongle, id: "logi-g435", name: "Logitech G435", kind: DeviceKind::Headset },
 ];
 
 #[derive(Default)]
