@@ -128,6 +128,34 @@ impl Provider for PlayStation {
 mod tests {
     use super::*;
 
+    /// A most csatlakoztatott kontrollerek (`cargo test playstation::tests::scan_present -- --ignored --nocapture`).
+    #[test]
+    #[ignore = "a csatlakoztatott hardvertől függ"]
+    fn scan_present() {
+        let t = std::time::Instant::now();
+        let all = hid::interfaces();
+        println!("interfaces(): {} db, {:?}", all.len(), t.elapsed());
+        let t = std::time::Instant::now();
+        let _ = PlayStation::default().scan();
+        println!("scan(): {:?}", t.elapsed());
+        for i in all.iter().filter(|i| i.vid == SONY && i.usage_page == 0x01 && i.usage == 0x05) {
+            let Some((family, name)) = model(i.pid) else { continue };
+            let bt = i.is_bluetooth();
+            let dev = Device::open(&i.path).expect("megnyitás");
+            let offset = match (family, bt) {
+                (Family::DualSense, false) => 53,
+                (Family::DualSense, true) => 54,
+                (Family::DualShock4, false) => 30,
+                (Family::DualShock4, true) => 32,
+            };
+            let report = dev.read(i.input_len as usize, 500).expect("report");
+            println!("{name} bt={bt} len={} id=0x{:02X} akku bájt=0x{:02X}", report.len(), report[0], report[offset]);
+        }
+        for d in PlayStation::default().scan() {
+            println!("{}", d.tooltip());
+        }
+    }
+
     #[test]
     fn dualsense_usb_and_bluetooth() {
         let mut usb = vec![0u8; 64];
