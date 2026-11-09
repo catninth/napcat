@@ -83,25 +83,7 @@ impl IconRenderer {
         // Szint ív 12 órától óramutató irányban, lekerekített végekkel.
         let ring = rt.CreateSolidColorBrush(&theme.ring(dev), None)?;
         if let (true, Some(level)) = (dev.connected, dev.level) {
-            let round = self.stroke_style(&[])?;
-            if level >= 100 {
-                rt.DrawEllipse(&ellipse, &ring, sw, &round);
-            } else if level > 0 {
-                let a = TAU * level as f32 / 100.0;
-                let geo = self.d2d.CreatePathGeometry()?;
-                let sink = geo.Open()?;
-                sink.BeginFigure(D2D_POINT_2F { x: c, y: c - r }, D2D1_FIGURE_BEGIN_HOLLOW);
-                sink.AddArc(&D2D1_ARC_SEGMENT {
-                    point: D2D_POINT_2F { x: c + r * a.sin(), y: c - r * a.cos() },
-                    size: D2D_SIZE_F { width: r, height: r },
-                    rotationAngle: 0.0,
-                    sweepDirection: D2D1_SWEEP_DIRECTION_CLOCKWISE,
-                    arcSize: if level > 50 { D2D1_ARC_SIZE_LARGE } else { D2D1_ARC_SIZE_SMALL },
-                });
-                sink.EndFigure(D2D1_FIGURE_END_OPEN);
-                sink.Close()?;
-                rt.DrawGeometry(&geo, &ring, sw, &round);
-            }
+            self.arc(rt, c, r, sw, level as f32 / 100.0, &ring)?;
         }
 
         // Eszköz glyph középen, a tálca szövegszínével. A betű valódi (tinta) kiterjedését mérjük,
@@ -138,6 +120,31 @@ impl IconRenderer {
             sink.Close()?;
             rt.FillGeometry(&geo, &clear, None);
             rt.SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_SOURCE_OVER);
+        }
+        Ok(())
+    }
+
+    /// Ív 12 órától óramutató irányban, lekerekített végekkel; `fraction` 0..=1.
+    unsafe fn arc(&self, rt: &ID2D1DeviceContext, c: f32, r: f32, sw: f32, fraction: f32, brush: &ID2D1SolidColorBrush) -> Result<()> {
+        let round = self.stroke_style(&[])?;
+        if fraction >= 1.0 {
+            let ellipse = D2D1_ELLIPSE { point: D2D_POINT_2F { x: c, y: c }, radiusX: r, radiusY: r };
+            rt.DrawEllipse(&ellipse, brush, sw, &round);
+        } else if fraction > 0.0 {
+            let a = TAU * fraction;
+            let geo = self.d2d.CreatePathGeometry()?;
+            let sink = geo.Open()?;
+            sink.BeginFigure(D2D_POINT_2F { x: c, y: c - r }, D2D1_FIGURE_BEGIN_HOLLOW);
+            sink.AddArc(&D2D1_ARC_SEGMENT {
+                point: D2D_POINT_2F { x: c + r * a.sin(), y: c - r * a.cos() },
+                size: D2D_SIZE_F { width: r, height: r },
+                rotationAngle: 0.0,
+                sweepDirection: D2D1_SWEEP_DIRECTION_CLOCKWISE,
+                arcSize: if fraction > 0.5 { D2D1_ARC_SIZE_LARGE } else { D2D1_ARC_SIZE_SMALL },
+            });
+            sink.EndFigure(D2D1_FIGURE_END_OPEN);
+            sink.Close()?;
+            rt.DrawGeometry(&geo, brush, sw, &round);
         }
         Ok(())
     }
@@ -322,22 +329,81 @@ mod tests {
                 }
             }
             rt.EndDraw(None, None).unwrap();
-
-            let path: Vec<u16> = concat!(env!("CARGO_MANIFEST_DIR"), "\\target\\icon-preview.png\0").encode_utf16().collect();
-            let stream = r.wic.CreateStream().unwrap();
-            stream.InitializeFromFilename(PCWSTR(path.as_ptr()), GENERIC_WRITE.0).unwrap();
-            let enc = r.wic.CreateEncoder(&GUID_ContainerFormatPng, std::ptr::null()).unwrap();
-            enc.Initialize(&stream, WICBitmapEncoderNoCache).unwrap();
-            let (mut frame, mut bag) = (None, None);
-            enc.CreateNewFrame(&mut frame, &mut bag).unwrap();
-            let frame = frame.unwrap();
-            frame.Initialize(bag.as_ref()).unwrap();
-            frame.SetSize(w, h).unwrap();
-            let mut fmt = GUID_WICPixelFormat32bppPBGRA;
-            frame.SetPixelFormat(&mut fmt).unwrap();
-            frame.WriteSource(&sheet, std::ptr::null()).unwrap();
-            frame.Commit().unwrap();
-            enc.Commit().unwrap();
+            save_png(&r.wic, &sheet, concat!(env!("CARGO_MANIFEST_DIR"), "\\target\\icon-preview.png"));
         }
+    }
+
+    /// Az alkalmazás ikonja (exe, telepítő): a design logója, egy ~70%-os kiemelő színű gyűrű.
+    /// Újragenerálás: `cargo test app_icon -- --ignored`, kimenet: res/napcat.ico.
+    #[test]
+    #[ignore = "felülírja a res/napcat.ico fájlt"]
+    fn app_icon() {
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            let r = IconRenderer::new().unwrap();
+            let props = D2D1_RENDER_TARGET_PROPERTIES {
+                pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
+                ..Default::default()
+            };
+            let mut images = Vec::new();
+            for size in [16u32, 20, 24, 32, 40, 48, 64, 256] {
+                let bmp = r.wic.CreateBitmap(size, size, &GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand).unwrap();
+                let rt: ID2D1DeviceContext = r.d2d.CreateWicBitmapRenderTarget(&bmp, &props).unwrap().cast().unwrap();
+                let s = size as f32;
+                let sw = s * 7.0 / 48.0;
+                let radius = s / 2.0 - s * 1.5 / 48.0 - sw / 2.0;
+                rt.BeginDraw();
+                rt.Clear(Some(&rgb(0, 0.0)));
+                let track = rt.CreateSolidColorBrush(&rgb(0x8A8A93, 0.35), None).unwrap();
+                let ellipse = D2D1_ELLIPSE { point: D2D_POINT_2F { x: s / 2.0, y: s / 2.0 }, radiusX: radius, radiusY: radius };
+                rt.DrawEllipse(&ellipse, &track, sw, None);
+                let accent = rt.CreateSolidColorBrush(&rgb(0x4CC2FF, 1.0), None).unwrap();
+                r.arc(&rt, s / 2.0, radius, sw, 0.7, &accent).unwrap();
+                rt.EndDraw(None, None).unwrap();
+                let path = format!("{}\\target\\app-icon-{size}.png", env!("CARGO_MANIFEST_DIR"));
+                save_png(&r.wic, &bmp, &path);
+                images.push((size, std::fs::read(&path).unwrap()));
+            }
+            std::fs::write(concat!(env!("CARGO_MANIFEST_DIR"), "\\res\\napcat.ico"), ico(&images)).unwrap();
+        }
+    }
+
+    /// ICO fájl PNG-tömörített képekből (Vista óta minden méretnél támogatott).
+    fn ico(images: &[(u32, Vec<u8>)]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&[0, 0, 1, 0]);
+        out.extend_from_slice(&(images.len() as u16).to_le_bytes());
+        let mut offset = 6 + 16 * images.len() as u32;
+        for (size, png) in images {
+            let dim = if *size >= 256 { 0 } else { *size as u8 };
+            out.extend_from_slice(&[dim, dim, 0, 0, 1, 0, 32, 0]);
+            out.extend_from_slice(&(png.len() as u32).to_le_bytes());
+            out.extend_from_slice(&offset.to_le_bytes());
+            offset += png.len() as u32;
+        }
+        for (_, png) in images {
+            out.extend_from_slice(png);
+        }
+        out
+    }
+
+    unsafe fn save_png(wic: &IWICImagingFactory, bmp: &IWICBitmap, path: &str) {
+        let wide: Vec<u16> = path.encode_utf16().chain(Some(0)).collect();
+        let stream = wic.CreateStream().unwrap();
+        stream.InitializeFromFilename(PCWSTR(wide.as_ptr()), GENERIC_WRITE.0).unwrap();
+        let enc = wic.CreateEncoder(&GUID_ContainerFormatPng, std::ptr::null()).unwrap();
+        enc.Initialize(&stream, WICBitmapEncoderNoCache).unwrap();
+        let (mut frame, mut bag) = (None, None);
+        enc.CreateNewFrame(&mut frame, &mut bag).unwrap();
+        let frame = frame.unwrap();
+        frame.Initialize(bag.as_ref()).unwrap();
+        let (mut w, mut h) = (0, 0);
+        bmp.GetSize(&mut w, &mut h).unwrap();
+        frame.SetSize(w, h).unwrap();
+        let mut fmt = GUID_WICPixelFormat32bppPBGRA;
+        frame.SetPixelFormat(&mut fmt).unwrap();
+        frame.WriteSource(bmp, std::ptr::null()).unwrap();
+        frame.Commit().unwrap();
+        enc.Commit().unwrap();
     }
 }

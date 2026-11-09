@@ -14,8 +14,9 @@ no WebView, no UI framework, and practically zero CPU when idle.
 |---|---|
 | M0 – tray icon, single instance, EcoQoS | done |
 | M1 – ring icon rendering (Direct2D) | done |
-| Device thread + cable/dongle detection | in progress |
-| Installer, releases, auto-update | planned |
+| Device thread + cable/dongle detection | done |
+| Installer (Inno Setup) + release workflow | done, not yet released |
+| Auto-update | planned |
 | Bluetooth, vendor protocols (Logitech HID++, DualSense, XInput, …) | planned |
 
 ## Building
@@ -25,7 +26,11 @@ Requires the Rust MSVC toolchain.
 ```sh
 cargo build --release
 cargo test preview      # renders all icon states to target/icon-preview.png
+iscc installer\napcat.iss   # installer -> target\installer (Inno Setup 6)
 ```
+
+Releases are built by `.github/workflows/release.yml` when a `v*` tag is pushed; the tag must match
+the version in `Cargo.toml`.
 
 ## Tools
 
