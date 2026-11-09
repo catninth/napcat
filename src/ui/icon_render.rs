@@ -92,8 +92,10 @@ impl IconRenderer {
         let glyph = rt.CreateSolidColorBrush(&theme.fg(if dev.connected { 1.0 } else { 0.45 }), None)?;
         let text = [glyph_char(dev.kind)];
         let ink = self.glyph_ink(&text, 100.0)?;
-        let inner = r - sw / 2.0 - (s * 0.04).max(0.5); // kis rés a gyűrű és a glyph között
-        let k = 2.0 * inner / (ink.width * ink.width + ink.height * ink.height).sqrt();
+        // A befoglaló téglalap átlója a gyűrű belső átmérője; a glyph-ek sarkai lekerekítettek,
+        // ezért kicsit nagyobbra vehető (a sarkok így is épp csak érintik a gyűrűt).
+        let inner = r - sw / 2.0 - s * 0.02;
+        let k = 1.12 * 2.0 * inner / (ink.width * ink.width + ink.height * ink.height).sqrt();
         let layout = self.glyph_layout(&text, 100.0 * k)?;
         let origin = D2D_POINT_2F { x: c - (ink.left + ink.width / 2.0) * k, y: c - (ink.top + ink.height / 2.0) * k };
         rt.DrawTextLayout(origin, &layout, &glyph, D2D1_DRAW_TEXT_OPTIONS_NONE);
