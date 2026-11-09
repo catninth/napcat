@@ -514,7 +514,11 @@ unsafe fn render_changed(hwnd: HWND, app: &mut App, visible: &[String]) -> bool 
                 Err(_) => break,
             }
         }
-        if let Some(Ok(hicon)) = renderer.as_ref().map(|r| r.render(&icon.state, size, theme)) {
+        // A helyőrző (nincs megjeleníthető eszköz) az egyszínű NapCat macska.
+        let rendered = renderer.as_ref().map(|r| {
+            if icon.is_placeholder() { r.render_app_mark(size, theme) } else { r.render(&icon.state, size, theme) }
+        });
+        if let Some(Ok(hicon)) = rendered {
             if !icon.icon.is_invalid() {
                 let _ = DestroyIcon(icon.icon);
             }

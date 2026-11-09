@@ -101,6 +101,84 @@ impl IconRenderer {
         unsafe { to_hicon(&self.render_pixels(dev, size, theme)?, size) }
     }
 
+    /// Az egyszínű NapCat tálcaikon (gyűrű + alvó macska), amíg nincs megjeleníthető eszköz.
+    pub fn render_app_mark(&self, size: u32, theme: Theme) -> Result<HICON> {
+        unsafe {
+            let px = self.render_with(size, |rt, s| {
+                let k = s / 48.0;
+                let fg = rt.CreateSolidColorBrush(&theme.fg(1.0), None)?;
+                self.arc(rt, 24.0 * k, 20.5 * k, 5.0 * k, 0.75, &fg)?;
+                let cat = glyphs::filled_geometry(&self.d2d, glyphs::app::TRAY_CAT, k, 0.0, 0.0)?;
+                rt.FillGeometry(&cat, &fg, None);
+                Ok(())
+            })?;
+            to_hicon(&px, size)
+        }
+    }
+
+    /// A NapCat app ikon `s` méretben (a design méretenkénti vonalvastagságaival): lekerekített
+    /// sötét négyzet, 75%-os kiemelő színű gyűrű, alvó macska, nagy méretben "zz".
+    #[cfg_attr(not(test), allow(dead_code))] // a res/napcat.ico generálója (app_icon teszt) használja
+    pub unsafe fn draw_app_icon(&self, rt: &ID2D1DeviceContext, s: f32, accent: D2D1_COLOR_F) -> Result<()> {
+        let k = s / 100.0;
+        // (gyűrű, szemek vonala, zz, orr) a 100-as rácson; 0 vonal: a szemek kis méretben elmaradnak.
+        let (ring, eyes, zz, nose) = match s as u32 {
+            256.. => (8.0, 2.0, true, true),
+            128.. => (8.0, 2.0, true, false),
+            64.. => (8.0, 2.4, true, false),
+            48.. => (9.0, 2.8, true, false),
+            40.. => (9.5, 3.0, false, false),
+            32.. => (10.0, 3.4, false, false),
+            24.. => (11.0, 0.0, false, false),
+            20.. => (11.5, 0.0, false, false),
+            _ => (12.0, 0.0, false, false),
+        };
+        let (bg, head) = (rgb(0x17181C, 1.0), rgb(0xF2F2F3, 1.0));
+        let tile = D2D1_ROUNDED_RECT { rect: D2D_RECT_F { left: k, top: k, right: 99.0 * k, bottom: 99.0 * k }, radiusX: 23.0 * k, radiusY: 23.0 * k };
+        rt.FillRoundedRectangle(&tile, &rt.CreateSolidColorBrush(&bg, None)?);
+        let border_w = if s <= 32.0 { 2.0 } else { 1.0 } * k;
+        rt.DrawRoundedRectangle(&tile, &rt.CreateSolidColorBrush(&rgb(0xFFFFFF, if s <= 32.0 { 0.12 } else { 0.1 }), None)?, border_w, None);
+        let accent_brush = rt.CreateSolidColorBrush(&accent, None)?;
+        self.arc(rt, 50.0 * k, 30.0 * k, ring * k, 0.75, &accent_brush)?;
+        // A macska a (50, 53) középpontra, 0,8-szoros méretben.
+        let (cs, cx, cy) = (0.8 * k, 50.0 * k, 53.0 * k);
+        let head_geo = glyphs::filled_geometry(&self.d2d, glyphs::app::CAT_HEAD, cs, cx, cy)?;
+        rt.FillGeometry(&head_geo, &rt.CreateSolidColorBrush(&head, None)?, None);
+        let bg_brush = rt.CreateSolidColorBrush(&bg, None)?;
+        if eyes > 0.0 {
+            let eyes_geo = glyphs::geometry(&self.d2d, glyphs::app::CAT_EYES, cs, cx, cy)?;
+            rt.DrawGeometry(&eyes_geo, &bg_brush, eyes * cs, &self.stroke_style(&[])?);
+        }
+        if nose {
+            let nose_geo = glyphs::filled_geometry(&self.d2d, glyphs::app::CAT_NOSE, cs, cx, cy)?;
+            rt.FillGeometry(&nose_geo, &bg_brush, None);
+        }
+        if zz {
+            let zz_geo = glyphs::geometry(&self.d2d, glyphs::app::ZZ, k, 0.0, 0.0)?;
+            rt.DrawGeometry(&zz_geo, &accent_brush, 2.4 * k, &self.stroke_style(&[])?);
+        }
+        Ok(())
+    }
+
+    /// Rajzolás egy `size` méretű átlátszó bitképre; premultiplied BGRA pixelek.
+    unsafe fn render_with(&self, size: u32, f: impl FnOnce(&ID2D1DeviceContext, f32) -> Result<()>) -> Result<Vec<u8>> {
+        let bmp = self.wic.CreateBitmap(size, size, &GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand)?;
+        let props = D2D1_RENDER_TARGET_PROPERTIES {
+            pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
+            dpiX: 96.0,
+            dpiY: 96.0,
+            ..Default::default()
+        };
+        let rt: ID2D1DeviceContext = self.d2d.CreateWicBitmapRenderTarget(&bmp, &props)?.cast()?;
+        rt.BeginDraw();
+        rt.Clear(Some(&rgb(0, 0.0)));
+        f(&rt, size as f32)?;
+        rt.EndDraw(None, None)?;
+        let mut px = vec![0u8; (size * size * 4) as usize];
+        bmp.CopyPixels(std::ptr::null(), size * 4, &mut px)?;
+        Ok(px)
+    }
+
     /// Premultiplied BGRA pixelek, soronként size*4 bájt.
     fn render_pixels(&self, dev: &DeviceState, size: u32, theme: Theme) -> Result<Vec<u8>> {
         unsafe {
@@ -571,7 +649,7 @@ mod tests {
         }
     }
 
-    /// Az alkalmazás ikonja (exe, telepítő): a design logója, egy ~70%-os kiemelő színű gyűrű.
+    /// Az alkalmazás ikonja (exe, telepítő, Start menü) a "NapCat app ikon" design szerint.
     /// Újragenerálás: `cargo test app_icon -- --ignored`, kimenet: res/napcat.ico.
     #[test]
     #[ignore = "felülírja a res/napcat.ico fájlt"]
@@ -584,19 +662,12 @@ mod tests {
                 ..Default::default()
             };
             let mut images = Vec::new();
-            for size in [16u32, 20, 24, 32, 40, 48, 64, 256] {
+            for size in [16u32, 20, 24, 32, 40, 48, 64, 128, 256] {
                 let bmp = r.wic.CreateBitmap(size, size, &GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand).unwrap();
                 let rt: ID2D1DeviceContext = r.d2d.CreateWicBitmapRenderTarget(&bmp, &props).unwrap().cast().unwrap();
-                let s = size as f32;
-                let sw = s * 7.0 / 48.0;
-                let radius = s / 2.0 - s * 1.5 / 48.0 - sw / 2.0;
                 rt.BeginDraw();
                 rt.Clear(Some(&rgb(0, 0.0)));
-                let track = rt.CreateSolidColorBrush(&rgb(0x8A8A93, 0.35), None).unwrap();
-                let ellipse = D2D1_ELLIPSE { point: D2D_POINT_2F { x: s / 2.0, y: s / 2.0 }, radiusX: radius, radiusY: radius };
-                rt.DrawEllipse(&ellipse, &track, sw, None);
-                let accent = rt.CreateSolidColorBrush(&rgb(0x4CC2FF, 1.0), None).unwrap();
-                r.arc(&rt, s / 2.0, radius, sw, 0.7, &accent).unwrap();
+                r.draw_app_icon(&rt, size as f32, rgb(0x4CC2FF, 1.0)).unwrap();
                 rt.EndDraw(None, None).unwrap();
                 let path = format!("{}\\target\\app-icon-{size}.png", env!("CARGO_MANIFEST_DIR"));
                 save_png(&r.wic, &bmp, &path);

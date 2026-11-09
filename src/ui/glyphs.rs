@@ -9,7 +9,7 @@ use windows::Win32::Graphics::Direct2D::*;
 
 use crate::model::DeviceKind;
 
-/// SVG útvonal (M, L, H, V, A, Z és kisbetűs változataik), a design Icons artboardjáról.
+/// Eszköz glyph SVG útvonala, a design Icons artboardjáról.
 pub fn path(kind: DeviceKind) -> Option<&'static str> {
     Some(match kind {
         DeviceKind::Mouse => "M12 3a6 6 0 0 0-6 6v6a6 6 0 0 0 12 0V9a6 6 0 0 0-6-6zM12 7v3",
@@ -60,8 +60,34 @@ fn tokenize(d: &str) -> Vec<Tok> {
     out
 }
 
-/// Geometria a `d` útvonalból: pont = (dx + x·scale, dy + y·scale).
+/// A NapCat app ikon rajzai (a "NapCat app ikon" design szerint). A nagy ikon rajzait csak a
+/// res/napcat.ico generálója használja.
+#[cfg_attr(not(test), allow(dead_code))]
+pub mod app {
+    /// Alvó macskafej, a (0, 0) középponthoz képest (kitöltött).
+    pub const CAT_HEAD: &str = "M-18 6C-18-6-14-12-12-14L-14-26-4-18C-1.5-18.6 1.5-18.6 4-18L14-26 12-14C14-12 18-6 18 6 18 16 10 20 0 20-10 20-18 16-18 6Z";
+    /// Csukott szemek (körvonal).
+    pub const CAT_EYES: &str = "M-10 1Q-7 4.5-4 1M4 1Q7 4.5 10 1";
+    /// Orr (kitöltött).
+    pub const CAT_NOSE: &str = "M-1.8 7.5H1.8L0 9.8Z";
+    /// "zz" a gyűrű résében, 100-as rácson.
+    pub const ZZ: &str = "M20 26h6l-6 7h6M29 16h4l-4 4.6h4";
+    /// Egyszínű tálcaikon macskája, 48-as rácson (kitöltött).
+    pub const TRAY_CAT: &str = "M15.5 30C15.5 24 17 21.5 18 20.5L17 14.5 21.5 18C23 17.6 25 17.6 26.5 18L31 14.5 30 20.5C31 21.5 32.5 24 32.5 30 32.5 34 29 35.5 24 35.5 19 35.5 15.5 34 15.5 30Z";
+}
+
+/// Körvonalas geometria a `d` útvonalból: pont = (dx + x·scale, dy + y·scale).
 pub unsafe fn geometry(factory: &ID2D1Factory1, d: &str, scale: f32, dx: f32, dy: f32) -> Result<ID2D1PathGeometry> {
+    build(factory, d, scale, dx, dy, false)
+}
+
+/// Kitölthető geometria (zárt alakzatok, pl. a macskafej).
+pub unsafe fn filled_geometry(factory: &ID2D1Factory1, d: &str, scale: f32, dx: f32, dy: f32) -> Result<ID2D1PathGeometry> {
+    build(factory, d, scale, dx, dy, true)
+}
+
+/// SVG útvonal (M, L, H, V, C, Q, A, Z és kisbetűs változataik, ismétlődő koordinátákkal).
+unsafe fn build(factory: &ID2D1Factory1, d: &str, scale: f32, dx: f32, dy: f32, filled: bool) -> Result<ID2D1PathGeometry> {
     let geo = factory.CreatePathGeometry()?;
     let sink = geo.Open()?;
     let toks = tokenize(d);
@@ -99,7 +125,7 @@ pub unsafe fn geometry(factory: &ID2D1Factory1, d: &str, scale: f32, dx: f32, dy
                 if open {
                     sink.EndFigure(D2D1_FIGURE_END_OPEN);
                 }
-                sink.BeginFigure(pt(x, y), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink.BeginFigure(pt(x, y), if filled { D2D1_FIGURE_BEGIN_FILLED } else { D2D1_FIGURE_BEGIN_HOLLOW });
                 open = true;
                 (sx, sy) = (x, y);
                 cmd = if rel { 'l' } else { 'L' }; // további számpárok vonalak
@@ -115,6 +141,17 @@ pub unsafe fn geometry(factory: &ID2D1Factory1, d: &str, scale: f32, dx: f32, dy
             'V' => {
                 y = by + num(&mut i);
                 sink.AddLine(pt(x, y));
+            }
+            'C' => {
+                let (x1, y1) = (bx + num(&mut i), by + num(&mut i));
+                let (x2, y2) = (bx + num(&mut i), by + num(&mut i));
+                (x, y) = (bx + num(&mut i), by + num(&mut i));
+                sink.AddBezier(&D2D1_BEZIER_SEGMENT { point1: pt(x1, y1), point2: pt(x2, y2), point3: pt(x, y) });
+            }
+            'Q' => {
+                let (x1, y1) = (bx + num(&mut i), by + num(&mut i));
+                (x, y) = (bx + num(&mut i), by + num(&mut i));
+                sink.AddQuadraticBezier(&D2D1_QUADRATIC_BEZIER_SEGMENT { point1: pt(x1, y1), point2: pt(x, y) });
             }
             'A' => {
                 let (rx, ry, rot) = (num(&mut i), num(&mut i), num(&mut i));
