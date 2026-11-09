@@ -1,4 +1,4 @@
-//! HID interfészek felsorolása (SetupAPI) és alapadataik (0 jogosultsággal megnyitva).
+//! HID interfészek felsorolása (SetupAPI), alapadataik, és időkorlátos olvasás/írás.
 
 use std::ffi::c_void;
 use std::mem::size_of;
@@ -8,11 +8,26 @@ use windows::Win32::Devices::DeviceAndDriverInstallation::*;
 use windows::Win32::Devices::HumanInterfaceDevice::*;
 use windows::Win32::Foundation::*;
 use windows::Win32::Storage::FileSystem::*;
+use windows::Win32::System::Threading::*;
+use windows::Win32::System::IO::*;
 
 pub struct HidInterface {
+    /// Nullával lezárt eszközútvonal.
+    pub path: Vec<u16>,
     pub vid: u16,
     pub pid: u16,
     pub product: String,
+    pub serial: String,
+    pub usage_page: u16,
+    pub usage: u16,
+    pub input_len: u16,
+}
+
+impl HidInterface {
+    /// Bluetooth Classic HID (HIDP szolgáltatás UUID az útvonalban).
+    pub fn is_bluetooth(&self) -> bool {
+        String::from_utf16_lossy(&self.path).to_ascii_lowercase().contains("00001124-0000-1000-8000-00805f9b34fb")
+    }
 }
 
 /// Az összes jelenlévő HID interfész.
@@ -48,6 +63,11 @@ unsafe fn paths() -> Vec<Vec<u16>> {
     paths
 }
 
+fn wide_string(buf: &[u16]) -> String {
+    let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    String::from_utf16_lossy(&buf[..end])
+}
+
 /// 0 hozzáféréssel a rendszer által foglalt billentyűzet/egér interfészek is megnyithatók.
 unsafe fn info(path: &[u16]) -> Option<HidInterface> {
     let h = CreateFileW(
@@ -64,7 +84,92 @@ unsafe fn info(path: &[u16]) -> Option<HidInterface> {
     let ok = HidD_GetAttributes(h, &mut attrs).as_bool();
     let mut prod = [0u16; 128];
     let _ = HidD_GetProductString(h, prod.as_mut_ptr() as *mut c_void, (prod.len() * 2) as u32);
+    let mut serial = [0u16; 128];
+    let _ = HidD_GetSerialNumberString(h, serial.as_mut_ptr() as *mut c_void, (serial.len() * 2) as u32);
+    let mut caps = HIDP_CAPS::default();
+    let mut pp = PHIDP_PREPARSED_DATA::default();
+    if HidD_GetPreparsedData(h, &mut pp).as_bool() {
+        let _ = HidP_GetCaps(pp, &mut caps);
+        let _ = HidD_FreePreparsedData(pp);
+    }
     let _ = CloseHandle(h);
-    let end = prod.iter().position(|&c| c == 0).unwrap_or(prod.len());
-    ok.then(|| HidInterface { vid: attrs.VendorID, pid: attrs.ProductID, product: String::from_utf16_lossy(&prod[..end]) })
+    ok.then(|| HidInterface {
+        path: path.to_vec(),
+        vid: attrs.VendorID,
+        pid: attrs.ProductID,
+        product: wide_string(&prod),
+        serial: wide_string(&serial),
+        usage_page: caps.UsagePage,
+        usage: caps.Usage,
+        input_len: caps.InputReportByteLength,
+    })
+}
+
+/// Írás-olvasásra megnyitott HID interfész, időkorlátos (overlapped) olvasással.
+pub struct Device {
+    h: HANDLE,
+    ev: HANDLE,
+}
+
+impl Device {
+    pub fn open(path: &[u16]) -> Option<Device> {
+        unsafe {
+            let h = CreateFileW(
+                PCWSTR(path.as_ptr()),
+                (GENERIC_READ | GENERIC_WRITE).0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                None,
+                OPEN_EXISTING,
+                FILE_FLAG_OVERLAPPED,
+                None,
+            )
+            .ok()?;
+            match CreateEventW(None, true, false, PCWSTR::null()) {
+                Ok(ev) => Some(Device { h, ev }),
+                Err(_) => {
+                    let _ = CloseHandle(h);
+                    None
+                }
+            }
+        }
+    }
+
+    /// Egy bejövő report (az első bájt a report ID), vagy None időtúllépéskor.
+    pub fn read(&self, len: usize, timeout_ms: u32) -> Option<Vec<u8>> {
+        let mut buf = vec![0u8; len];
+        unsafe {
+            let _ = ResetEvent(self.ev);
+            let mut ov = OVERLAPPED { hEvent: self.ev, ..Default::default() };
+            if let Err(e) = ReadFile(self.h, Some(&mut buf), None, Some(&mut ov)) {
+                if e.code() != ERROR_IO_PENDING.to_hresult() {
+                    return None;
+                }
+            }
+            let mut n = 0u32;
+            if WaitForSingleObject(self.ev, timeout_ms) != WAIT_OBJECT_0 {
+                let _ = CancelIoEx(self.h, Some(&ov));
+                let _ = GetOverlappedResult(self.h, &ov, &mut n, true);
+                return None;
+            }
+            GetOverlappedResult(self.h, &ov, &mut n, false).ok()?;
+            buf.truncate(n as usize);
+        }
+        Some(buf)
+    }
+
+    /// Feature report lekérése (`len` bájt a report ID-vel együtt).
+    pub fn get_feature(&self, id: u8, len: usize) -> Option<Vec<u8>> {
+        let mut buf = vec![0u8; len];
+        buf[0] = id;
+        unsafe { HidD_GetFeature(self.h, buf.as_mut_ptr() as *mut c_void, len as u32).as_bool().then_some(buf) }
+    }
+}
+
+impl Drop for Device {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseHandle(self.ev);
+            let _ = CloseHandle(self.h);
+        }
+    }
 }

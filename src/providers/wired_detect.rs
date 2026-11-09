@@ -60,7 +60,7 @@ impl Provider for WiredDetect {
                 continue;
             };
             self.seen.insert(k.id);
-            out.push(DeviceState { id: k.id.into(), name: k.name.into(), kind: k.kind, level: None, charge, connected });
+            out.push(DeviceState { charge, connected, ..DeviceState::disconnected(k.id, k.name, k.kind) });
         }
         out
     }

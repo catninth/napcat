@@ -191,8 +191,8 @@ unsafe fn draw_content(ctx: &ID2D1DeviceContext, renderer: &IconRenderer, device
         text.draw(&d.name, 14.0, DWRITE_FONT_WEIGHT_SEMI_BOLD, x, y + 12.0, right - x - 52.0, name_color, false)?;
         text.draw(d.status(), 12.0, DWRITE_FONT_WEIGHT_NORMAL, x, y + 32.0, right - x - 52.0, theme.sub(), false)?;
         let (pct, pct_color) = match (d.connected, d.level) {
-            (true, Some(l)) if l < 20 && d.charge != ChargeState::Charging => (format!("{l}%"), theme.ring(d)),
-            (true, Some(l)) => (format!("{l}%"), theme.fg(1.0)),
+            (true, Some(l)) if l < 20 && d.charge != ChargeState::Charging => (d.level_text().unwrap_or_default(), theme.ring(d)),
+            (true, Some(_)) => (d.level_text().unwrap_or_default(), theme.fg(1.0)),
             _ => ("–".to_string(), theme.sub()),
         };
         text.draw(&pct, 17.0, DWRITE_FONT_WEIGHT_SEMI_BOLD, right - 60.0, y + 19.0, 60.0, pct_color, true)?;
@@ -252,7 +252,15 @@ mod tests {
             let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
             let renderer = IconRenderer::new().unwrap();
             let wic: IWICImagingFactory = CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).unwrap();
-            let dev = |name: &str, kind, level, charge, connected| DeviceState { id: name.into(), name: name.into(), kind, level, charge, connected };
+            let dev = |name: &str, kind, level, charge, connected| DeviceState {
+                id: name.into(),
+                name: name.into(),
+                kind,
+                level,
+                level_approx: false,
+                charge,
+                connected,
+            };
             let devices = vec![
                 dev("Royal Kludge R75 Pro", DeviceKind::Keyboard, None, ChargeState::Charging, true),
                 dev("VGN Dragonfly", DeviceKind::Mouse, None, ChargeState::Unknown, true),

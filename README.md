@@ -17,8 +17,10 @@ no WebView, no UI framework, and practically zero CPU when idle.
 | Device thread + cable/dongle detection | done |
 | Installer (Inno Setup) + release workflow | done, not yet released |
 | Flyout panel (left click), tray menu, hide devices, autostart, low battery notifications | done |
+| PlayStation controllers (DualSense, DualSense Edge, DualShock 4; USB and Bluetooth) | done, untested on hardware |
+| Xbox controllers (XInput, approximate level) | done, untested on hardware |
 | Auto-update | planned |
-| Bluetooth, vendor protocols (Logitech HID++, DualSense, XInput, …) | planned |
+| Bluetooth battery, Logitech HID++, headsets, VGN, … | planned |
 
 ## Building
 

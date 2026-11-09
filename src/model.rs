@@ -1,6 +1,6 @@
 //! Központi típusok, amelyeket a providerek adnak és a UI megjelenít.
 
-// Egyes változatokat csak a későbbi providerek (BT, HID++, XInput…) állítanak elő.
+// Egyes változatokat csak a későbbi providerek (BT, HID++…) állítanak elő.
 #[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DeviceKind {
@@ -11,7 +11,6 @@ pub enum DeviceKind {
     Other,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ChargeState {
     Discharging,
@@ -26,13 +25,34 @@ pub struct DeviceState {
     pub name: String,
     pub kind: DeviceKind,
     pub level: Option<u8>, // 0-100, None ha ismeretlen
+    /// A szint csak közelítő (pl. XInput: négy fokozat), "~72%"-ként jelenik meg.
+    pub level_approx: bool,
     pub charge: ChargeState,
     pub connected: bool,
 }
 
 impl DeviceState {
+    /// Egy korábban látott, most nem csatlakoztatott eszköz.
+    pub fn disconnected(id: &str, name: &str, kind: DeviceKind) -> DeviceState {
+        DeviceState {
+            id: id.into(),
+            name: name.into(),
+            kind,
+            level: None,
+            level_approx: false,
+            charge: ChargeState::Unknown,
+            connected: false,
+        }
+    }
+
     pub fn is_charging(&self) -> bool {
         self.connected && self.charge == ChargeState::Charging
+    }
+
+    /// A szint szövegként, pl. "72%" vagy közelítő értéknél "~60%".
+    pub fn level_text(&self) -> Option<String> {
+        let l = self.level?;
+        Some(if self.level_approx { format!("~{l}%") } else { format!("{l}%") })
     }
 
     /// Rövid állapot a felugró panelhez, pl. "Tölt" vagy "Csatlakoztatva, szint ismeretlen".
@@ -52,7 +72,7 @@ impl DeviceState {
         if !self.connected {
             return format!("{} – nincs csatlakoztatva", self.name);
         }
-        let level = self.level.map_or("ismeretlen szint".to_string(), |l| format!("{l}%"));
+        let level = self.level_text().unwrap_or_else(|| "ismeretlen szint".to_string());
         let charge = match self.charge {
             ChargeState::Discharging => "nem tölt",
             ChargeState::Charging => "tölt",

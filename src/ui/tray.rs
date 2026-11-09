@@ -89,14 +89,7 @@ impl TrayIcon {
 
     /// Helyőrző, amíg egyetlen látható eszköz sincs (különben nem lenne mire kattintani).
     fn placeholder() -> TrayIcon {
-        let state = DeviceState {
-            id: String::new(),
-            name: "NapCat".into(),
-            kind: DeviceKind::Other,
-            level: None,
-            charge: ChargeState::Unknown,
-            connected: false,
-        };
+        let state = DeviceState::disconnected("", "NapCat", DeviceKind::Other);
         TrayIcon { guid: GUID::from_u128(BASE_GUID), ..TrayIcon::new(PLACEHOLDER_UID, state) }
     }
 

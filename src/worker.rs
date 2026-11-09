@@ -1,15 +1,17 @@
 //! Eszközszál: providerek futtatása, eszközváltozások figyelése, csatorna a UI felé.
 //!
-//! A szál nem pollol: egy eseményre alszik, amit a Windows HID eszközértesítése jelez
+//! A szál egy eseményre alszik, amit a Windows HID eszközértesítése jelez
 //! (CM_Register_Notification). Ébredés után rövid ideig gyűjti a további értesítéseket
 //! (egy eszköz több interfésszel jelenik meg), majd a providerek újraolvassák az állapotot,
-//! és csak a ténylegesen változott eszközök mennek a UI szálnak.
+//! és csak a ténylegesen változott eszközök mennek a UI szálnak. Időzített olvasást csak az a
+//! provider kér, amelynek eszköze magától nem jelez, és csak amíg van csatlakoztatott eszköze.
 
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
+use std::time::Instant;
 
 use windows::core::PCWSTR;
 use windows::Win32::Devices::DeviceAndDriverInstallation::*;
@@ -19,7 +21,7 @@ use windows::Win32::System::Threading::*;
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 
 use crate::model::DeviceState;
-use crate::providers::{wired_detect::WiredDetect, Provider};
+use crate::providers::{playstation::PlayStation, wired_detect::WiredDetect, xinput::XInput, Provider};
 
 /// A UI ablaknak küldött üzenet: új állapotok várnak a csatornán.
 pub const WM_DEVICES: u32 = WM_APP + 2;
@@ -42,11 +44,19 @@ unsafe fn run(hwnd: HWND, tx: Sender<DeviceState>) {
     let Ok(changed) = CreateEventW(None, false, false, PCWSTR::null()) else { return };
     let _notify = register_hid_notification(changed);
 
-    let mut providers: Vec<Box<dyn Provider>> = vec![Box::new(WiredDetect::default())];
+    let mut providers: Vec<Box<dyn Provider>> =
+        vec![Box::new(WiredDetect::default()), Box::new(PlayStation::default()), Box::new(XInput::default())];
+    // Mikor esedékes a következő időzített olvasás providerenként (None: csak eseményre).
+    let mut due: Vec<Option<Instant>> = vec![None; providers.len()];
     let mut last: HashMap<String, DeviceState> = HashMap::new();
+    let mut device_change = true;
     loop {
+        let now = Instant::now();
         let mut any = false;
-        for p in providers.iter_mut() {
+        for (p, due) in providers.iter_mut().zip(due.iter_mut()) {
+            if !device_change && !due.is_some_and(|d| d <= now) {
+                continue;
+            }
             for state in p.scan() {
                 if last.get(&state.id) != Some(&state) {
                     last.insert(state.id.clone(), state.clone());
@@ -56,14 +66,21 @@ unsafe fn run(hwnd: HWND, tx: Sender<DeviceState>) {
                     any = true;
                 }
             }
+            *due = p.poll_interval().map(|i| now + i);
         }
         if any {
             let _ = PostMessageW(hwnd, WM_DEVICES, WPARAM(0), LPARAM(0));
         }
 
-        // Alvás a következő eszközváltozásig, majd a további értesítések kivárása.
-        WaitForSingleObject(changed, INFINITE);
-        while WaitForSingleObject(changed, SETTLE_MS) == WAIT_OBJECT_0 {}
+        // Egyetlen időzítő az egész apphoz: alvás a legközelebbi esedékes olvasásig vagy a
+        // következő eszközváltozásig; utána a további értesítések kivárása.
+        let timeout = due.iter().flatten().min().map_or(INFINITE, |d| {
+            d.saturating_duration_since(Instant::now()).as_millis().min(u32::MAX as u128 - 1) as u32
+        });
+        device_change = WaitForSingleObject(changed, timeout) == WAIT_OBJECT_0;
+        if device_change {
+            while WaitForSingleObject(changed, SETTLE_MS) == WAIT_OBJECT_0 {}
+        }
     }
 }
 
