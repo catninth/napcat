@@ -4,6 +4,7 @@ mod model;
 mod providers;
 mod settings;
 mod ui;
+mod updater;
 mod worker;
 
 use std::ffi::c_void;
@@ -16,6 +17,10 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::*;
 
 fn main() -> Result<()> {
+    // Frissítő segédfolyamat (--update-check / --update-download): elvégzi, kiírja, kilép.
+    if let Some(code) = updater::run_cli(&std::env::args().collect::<Vec<_>>()) {
+        std::process::exit(code);
+    }
     unsafe {
         // Egypéldányos futás: a mutex a folyamat végéig él.
         let _mutex = CreateMutexW(None, true, w!("Local\\NapCat.SingleInstance"))?;

@@ -16,7 +16,7 @@ use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use windows::core::PCWSTR;
 use windows::Win32::Devices::DeviceAndDriverInstallation::*;
@@ -26,6 +26,7 @@ use windows::Win32::System::Threading::*;
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 
 use crate::model::DeviceState;
+use crate::updater;
 use crate::providers::bt_pnp::BtPnp;
 use crate::providers::logitech_hidpp::LogitechHidpp;
 use crate::providers::{playstation::PlayStation, wired_detect::WiredDetect, xinput::XInput, Provider};
@@ -36,8 +37,21 @@ pub const WM_DEVICES: u32 = WM_APP + 2;
 /// Ennyi ideig gyűjtjük az egymás utáni eszközértesítéseket egy újraolvasás előtt.
 const SETTLE_MS: u32 = 300;
 
+/// A UI ablaknak küldött üzenet: új verzió érhető el (updater::AVAILABLE).
+pub const WM_UPDATE: u32 = WM_APP + 3;
+
+/// Első frissítés-ellenőrzés indulás után, majd ennyi időnként.
+const UPDATE_FIRST: Duration = Duration::from_secs(60);
+const UPDATE_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
+
 /// Képernyő kikapcsolva vagy zárolva: nincs időzített olvasás.
 static PAUSED: AtomicBool = AtomicBool::new(false);
+/// Frissítések keresése (a beállításokból; "off" esetén false).
+static UPDATES: AtomicBool = AtomicBool::new(true);
+
+pub fn set_updates_enabled(on: bool) {
+    UPDATES.store(on, Ordering::Relaxed);
+}
 /// Akkumulátoros üzem: dupla időközök.
 static ON_BATTERY: AtomicBool = AtomicBool::new(false);
 /// Az eszközszál ébresztő eseménye (HANDLE), hogy a változás azonnal érvényesüljön.
@@ -102,8 +116,20 @@ unsafe fn run(hwnd: HWND, tx: Sender<DeviceState>) {
     let mut due: Vec<Option<Instant>> = vec![None; providers.len()];
     let mut last: HashMap<String, DeviceState> = HashMap::new();
     let mut device_change = true;
+    let mut update_due = Instant::now() + UPDATE_FIRST;
     loop {
         let now = Instant::now();
+        // Frissítés-ellenőrzés ugyanazon az időzítőn; ritka (naponta), és csak egy kis HTTP kérés.
+        if update_due <= now && !PAUSED.load(Ordering::Relaxed) {
+            update_due = now + UPDATE_EVERY;
+            if UPDATES.load(Ordering::Relaxed) {
+                let found = updater::check_in_child(env!("CARGO_PKG_VERSION"));
+                log(&format!("frissítés-ellenőrzés: {:?}", found.as_ref().map(|r| &r.version)));
+                if found.is_some() {
+                    let _ = PostMessageW(hwnd, WM_UPDATE, WPARAM(0), LPARAM(0));
+                }
+            }
+        }
         let mut any = false;
         for (p, due) in providers.iter_mut().zip(due.iter_mut()) {
             if !device_change && !due.is_some_and(|d| d <= now) {
@@ -133,9 +159,8 @@ unsafe fn run(hwnd: HWND, tx: Sender<DeviceState>) {
         let timeout = if PAUSED.load(Ordering::Relaxed) {
             INFINITE
         } else {
-            due.iter().flatten().min().map_or(INFINITE, |d| {
-                d.saturating_duration_since(Instant::now()).as_millis().min(u32::MAX as u128 - 1) as u32
-            })
+            let next = due.iter().flatten().copied().chain(Some(update_due)).min().unwrap_or(update_due);
+            next.saturating_duration_since(Instant::now()).as_millis().min(u32::MAX as u128 - 1) as u32
         };
         device_change = WaitForSingleObject(changed, timeout) == WAIT_OBJECT_0;
         if device_change {

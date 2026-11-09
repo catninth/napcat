@@ -4,8 +4,10 @@
 use std::cell::{Cell, RefCell};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::mem::size_of;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::Receiver;
+use std::sync::Mutex;
 
 use windows::core::{w, Result, GUID, PCWSTR};
 use windows::Win32::Foundation::*;
@@ -23,7 +25,8 @@ use super::icon_render::{IconRenderer, Layout};
 use super::theme::Theme;
 use crate::model::{ChargeState, DeviceKind, DeviceState};
 use crate::settings::{self, Settings};
-use crate::worker::{self, WM_DEVICES};
+use crate::updater;
+use crate::worker::{self, WM_DEVICES, WM_UPDATE};
 
 const WM_TRAY: u32 = WM_APP + 1;
 const PLACEHOLDER_UID: u32 = 1;
@@ -35,8 +38,70 @@ const ID_EXIT: usize = 100;
 const ID_AUTOSTART: usize = 101;
 const ID_NOTIFY_LOW: usize = 102;
 const ID_HIDE: usize = 103;
+const ID_UPDATE: usize = 104;
 const ID_SHOW_BASE: usize = 200;
 const ID_STYLE_BASE: usize = 300;
+const ID_UPDATE_MODE_BASE: usize = 400;
+
+const UPDATE_MODES: [(&str, &str); 3] =
+    [("auto", "Automatikus telepítés"), ("notify", "Csak értesítés"), ("off", "Kikapcsolva")];
+
+/// A letöltött, ellenőrzött telepítő készen áll (READY).
+const WM_UPDATE_READY: u32 = WM_APP + 4;
+static INSTALLING: AtomicBool = AtomicBool::new(false);
+static READY: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Új verzió érkezett: automatikus módban telepít, különben értesít.
+unsafe fn on_update(hwnd: HWND) {
+    let Some(release) = updater::AVAILABLE.lock().ok().and_then(|a| a.clone()) else { return };
+    let auto = with_app(|app| app.settings.update_mode == "auto");
+    if auto {
+        start_install(hwnd);
+    } else {
+        notify_app(hwnd, &format!("Új NapCat verzió: {}", release.version), "Telepítés: jobb klikk az ikonon → Frissítés telepítése.", false);
+    }
+}
+
+/// Értesítés az első látható ikon nevében (eszköz vagy helyőrző).
+unsafe fn notify_app(hwnd: HWND, title: &str, text: &str, warning: bool) {
+    with_app(|app| {
+        if let Some(icon) = app.icons_mut().find(|i| i.shown) {
+            icon.notify(hwnd, title, text, warning);
+        }
+    });
+}
+
+/// Letöltés és ellenőrzés egy rövid életű szálon; a végén WM_UPDATE_READY.
+unsafe fn start_install(hwnd: HWND) {
+    let Some(release) = updater::AVAILABLE.lock().ok().and_then(|a| a.clone()) else { return };
+    if INSTALLING.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    let hwnd_raw = hwnd.0 as isize; // a HWND nem Send
+    std::thread::spawn(move || {
+        let path = updater::download_in_child(&release);
+        if let Ok(mut ready) = READY.lock() {
+            *ready = path;
+        }
+        unsafe {
+            let _ = PostMessageW(HWND(hwnd_raw as *mut _), WM_UPDATE_READY, WPARAM(0), LPARAM(0));
+        }
+    });
+}
+
+unsafe fn on_update_ready(hwnd: HWND) {
+    let path = READY.lock().ok().and_then(|mut r| r.take());
+    match path {
+        Some(path) if updater::run_installer(&path) => {
+            // A telepítő csendben lefut, és a végén újraindítja az appot.
+            let _ = DestroyWindow(hwnd);
+        }
+        _ => {
+            INSTALLING.store(false, Ordering::Relaxed);
+            notify_app(hwnd, "A frissítés nem sikerült", "A letöltés vagy az ellenőrzés hibát adott; később újra próbálható.", true);
+        }
+    }
+}
 
 /// Alacsony akku értesítés küszöbei (%), mindegyiknél egyszer szól.
 const LOW_THRESHOLDS: [u8; 2] = [15, 5];
@@ -158,13 +223,13 @@ impl TrayIcon {
     }
 
     /// Windows értesítés (balloon/toast) ennek az ikonnak a nevében.
-    unsafe fn notify(&self, hwnd: HWND, title: &str, text: &str) {
+    unsafe fn notify(&self, hwnd: HWND, title: &str, text: &str, warning: bool) {
         if !self.shown {
             return;
         }
         let mut nid = self.data(hwnd);
         nid.uFlags |= NIF_INFO;
-        nid.dwInfoFlags = NIIF_WARNING;
+        nid.dwInfoFlags = if warning { NIIF_WARNING } else { NIIF_INFO };
         copy_wide(&mut nid.szInfoTitle, title);
         copy_wide(&mut nid.szInfo, text);
         let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
@@ -301,7 +366,10 @@ pub unsafe fn run(hinst: HINSTANCE) -> Result<()> {
         settings: Settings::load(),
         next_uid: PLACEHOLDER_UID + 1,
     }));
-    with_app(|app| app.sync(hwnd));
+    with_app(|app| {
+        worker::set_updates_enabled(app.settings.update_mode != "off");
+        app.sync(hwnd)
+    });
     register_power_notifications(hwnd);
 
     let mut msg = MSG::default();
@@ -383,7 +451,7 @@ unsafe fn on_devices(hwnd: HWND) {
             for (i, threshold) in warnings {
                 let d = &app.devices[i];
                 let text = format!("{}: {}% maradt.", d.state.name, d.state.level.unwrap_or(threshold));
-                d.notify(hwnd, &format!("Alacsony akkuszint ({threshold}%)"), &text);
+                d.notify(hwnd, &format!("Alacsony akkuszint ({threshold}%)"), &text, true);
             }
         }
         app.device_states()
@@ -432,6 +500,10 @@ unsafe fn show_menu(hwnd: HWND, uid: u32, x: i32, y: i32) {
     let check = |on: bool| if on { MF_CHECKED } else { MF_UNCHECKED };
 
     let _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, text(format!("NapCat {}", env!("CARGO_PKG_VERSION"))));
+    if let Some(release) = updater::AVAILABLE.lock().ok().and_then(|a| a.clone()) {
+        let busy = if INSTALLING.load(Ordering::Relaxed) { MF_GRAYED } else { MF_ENABLED };
+        let _ = AppendMenuW(menu, MF_STRING | busy, ID_UPDATE, text(format!("Frissítés telepítése ({})", release.version)));
+    }
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
     if let Some(name) = clicked {
         let _ = AppendMenuW(menu, MF_STRING, ID_HIDE, text(format!("{name} elrejtése")));
@@ -452,6 +524,12 @@ unsafe fn show_menu(hwnd: HWND, uid: u32, x: i32, y: i32) {
     }
     let _ = AppendMenuW(menu, MF_STRING | check(settings::autostart_enabled()), ID_AUTOSTART, w!("Indítás a Windows-zal"));
     let _ = AppendMenuW(menu, MF_STRING | check(settings.notify_low), ID_NOTIFY_LOW, w!("Értesítés alacsony akkuszintnél"));
+    if let Ok(sub) = CreatePopupMenu() {
+        for (i, (key, label)) in UPDATE_MODES.iter().enumerate() {
+            let _ = AppendMenuW(sub, MF_STRING | check(settings.update_mode == *key), ID_UPDATE_MODE_BASE + i, text(label.to_string()));
+        }
+        let _ = AppendMenuW(menu, MF_POPUP, sub.0 as usize, w!("Frissítések"));
+    }
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
     let _ = AppendMenuW(menu, MF_STRING, ID_EXIT, w!("Kilépés"));
 
@@ -480,6 +558,14 @@ unsafe fn on_command(hwnd: HWND, uid: u32, cmd: usize) {
                 app.settings.hidden.push(d.state.id.clone());
                 app.settings.save();
                 app.sync(hwnd);
+            }
+        }),
+        ID_UPDATE => start_install(hwnd),
+        _ if cmd >= ID_UPDATE_MODE_BASE => with_app(|app| {
+            if let Some((key, _)) = UPDATE_MODES.get(cmd - ID_UPDATE_MODE_BASE) {
+                app.settings.update_mode = key.to_string();
+                app.settings.save();
+                worker::set_updates_enabled(*key != "off");
             }
         }),
         _ if cmd >= ID_STYLE_BASE => with_app(|app| {
@@ -525,6 +611,14 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             }
             WM_DEVICES => {
                 on_devices(hwnd);
+                LRESULT(0)
+            }
+            WM_UPDATE => {
+                on_update(hwnd);
+                LRESULT(0)
+            }
+            WM_UPDATE_READY => {
+                on_update_ready(hwnd);
                 LRESULT(0)
             }
             WM_POWERBROADCAST => {

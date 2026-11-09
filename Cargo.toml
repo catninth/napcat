@@ -17,6 +17,8 @@ features = [
     "Foundation_Numerics",
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_Security_Cryptography",
+    "Win32_Networking_WinHttp",
     "Win32_Devices_DeviceAndDriverInstallation",
     "Win32_Devices_HumanInterfaceDevice",
     "Win32_Devices_Properties",

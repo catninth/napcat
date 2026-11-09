@@ -17,11 +17,13 @@ pub struct Settings {
     pub notify_low: bool,
     /// A tálcaikon elrendezése: "ring", "pie" vagy "bar".
     pub icon_style: String,
+    /// Frissítések: "auto" (letölt és telepít), "notify" (csak szól) vagy "off".
+    pub update_mode: String,
 }
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings { hidden: Vec::new(), notify_low: true, icon_style: "ring".into() }
+        Settings { hidden: Vec::new(), notify_low: true, icon_style: "ring".into(), update_mode: "notify".into() }
     }
 }
 
@@ -39,6 +41,7 @@ impl Settings {
             match key.trim() {
                 "notify_low" => s.notify_low = value != "false",
                 "icon_style" => s.icon_style = value.trim_matches('"').to_string(),
+                "update_mode" => s.update_mode = value.trim_matches('"').to_string(),
                 "hidden" => {
                     s.hidden = value
                         .trim_start_matches('[')
@@ -61,9 +64,10 @@ impl Settings {
         }
         let hidden: Vec<String> = self.hidden.iter().map(|h| format!("\"{}\"", h.replace('"', ""))).collect();
         let text = format!(
-            "# NapCat beállítások\nnotify_low = {}\nicon_style = \"{}\"\nhidden = [{}]\n",
+            "# NapCat beállítások\nnotify_low = {}\nicon_style = \"{}\"\nupdate_mode = \"{}\"\nhidden = [{}]\n",
             self.notify_low,
             self.icon_style.replace('"', ""),
+            self.update_mode.replace('"', ""),
             hidden.join(", ")
         );
         let _ = std::fs::write(path, text);
