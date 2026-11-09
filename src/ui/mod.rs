@@ -1,4 +1,5 @@
 pub mod draw;
+pub mod estimate;
 pub mod flyout;
 pub mod glyphs;
 pub mod icon_render;

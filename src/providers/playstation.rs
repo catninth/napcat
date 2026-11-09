@@ -116,7 +116,7 @@ impl Provider for PlayStation {
                 level_approx: false,
                 charge,
                 connected: true,
-                hw: Some((i.vid, i.pid)),
+                hw: Some((i.vid, i.pid)), estimate: None,
             });
         }
         self.connected = out.len();

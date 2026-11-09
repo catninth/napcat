@@ -203,7 +203,7 @@ fn read_device(dev: &Device, i: &HidInterface, index: u8) -> Option<DeviceState>
         Some((l, a, c)) => (Some(l), a, c),
         None => (None, false, ChargeState::Unknown),
     };
-    Some(DeviceState { id, name, kind, level, level_approx, charge, connected: true, hw: Some((i.vid, i.pid)) })
+    Some(DeviceState { id, name, kind, level, level_approx, charge, connected: true, hw: Some((i.vid, i.pid)), estimate: None })
 }
 
 #[derive(Default)]

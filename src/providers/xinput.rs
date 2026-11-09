@@ -47,7 +47,7 @@ impl Provider for XInput {
                     level_approx: true,
                     charge: ChargeState::Discharging,
                     connected: true,
-                    hw: None,
+                    hw: None, estimate: None,
                 });
             } else if self.seen[slot as usize] {
                 out.push(DeviceState::disconnected(&id, &name(slot), DeviceKind::Controller));

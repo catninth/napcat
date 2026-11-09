@@ -32,6 +32,9 @@ pub struct DeviceState {
     /// USB/HID azonosító (VID, PID), ha ismert: ebből tudja az Eszközök oldal, hogy a Windows által
     /// észlelt eszközök közül melyik szerepel már a NapCat-ben.
     pub hw: Option<(u16, u16)>,
+    /// A tálca számolja az előzményekből (a providerek nem töltik ki): pl. "kb. 40 perc",
+    /// "1 ó 10 p a telig", leválasztva "2 órája".
+    pub estimate: Option<String>,
 }
 
 impl DeviceState {
@@ -46,6 +49,7 @@ impl DeviceState {
             charge: ChargeState::Unknown,
             connected: false,
             hw: None,
+            estimate: None,
         }
     }
 

@@ -115,7 +115,7 @@ impl Provider for BtPnp {
                 // A property csak a szintet adja; a töltést a Windows itt nem jelzi.
                 charge: ChargeState::Unknown,
                 connected: true,
-                hw: None,
+                hw: None, estimate: None,
             });
         }
         self.connected = out.len();

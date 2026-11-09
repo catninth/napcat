@@ -20,6 +20,10 @@ use windows::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
 use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
+use std::collections::HashMap;
+use std::time::Instant;
+
+use super::estimate::History;
 use super::flyout;
 use super::settings_window;
 use super::icon_render::{IconRenderer, Layout};
@@ -306,6 +310,8 @@ struct App {
     last_update: Option<std::time::Instant>,
     /// Csendes módban (teljes képernyős alkalmazás) várakozó értesítések: (eszköz id, cím, szöveg, figyelmeztetés).
     pending: Vec<(String, String, String, bool)>,
+    /// Eszközönkénti előzmények a becsléshez ("kb. 40 perc", "1 ó 10 p a telig", "2 órája").
+    histories: HashMap<String, History>,
 }
 
 /// Sürgősség az "egy ikon" módhoz: lemerülő > töltő > legalacsonyabb szint > többi (kisebb = sürgősebb).
@@ -325,13 +331,19 @@ impl App {
         self.devices.iter_mut().chain(std::iter::once(&mut self.placeholder))
     }
 
+    /// Egy eszköz állapota a friss becsléssel (az idő múlásával a "2 órája" is változik).
+    fn with_estimate(&self, d: &TrayIcon) -> DeviceState {
+        let estimate = self.histories.get(&d.state.id).and_then(|h| h.estimate(&d.state, Instant::now()));
+        DeviceState { estimate, ..d.state.clone() }
+    }
+
     fn device_states(&self) -> Vec<DeviceState> {
-        self.devices.iter().map(|d| d.state.clone()).collect()
+        self.devices.iter().map(|d| self.with_estimate(d)).collect()
     }
 
     /// A NapCat-ben megjelenő eszközök (az Eszközök oldalon eltávolítottak nélkül).
     fn active_states(&self) -> Vec<DeviceState> {
-        self.devices.iter().filter(|d| !self.settings.removed.contains(&d.state.id)).map(|d| d.state.clone()).collect()
+        self.devices.iter().filter(|d| !self.settings.removed.contains(&d.state.id)).map(|d| self.with_estimate(d)).collect()
     }
 
     /// A tálcán látszó eszközök: a nem rejtettek, "egy ikon" módban csak a legsürgősebb.
@@ -499,6 +511,7 @@ pub unsafe fn run(hinst: HINSTANCE) -> Result<()> {
         next_uid: PLACEHOLDER_UID + 1,
         last_update: None,
         pending: Vec::new(),
+        histories: HashMap::new(),
     }));
     with_app(|app| app.apply_settings(hwnd));
     register_power_notifications(hwnd);
@@ -577,6 +590,7 @@ unsafe fn on_devices(hwnd: HWND) {
                 }
             };
             let d = &mut app.devices[index];
+            app.histories.entry(d.state.id.clone()).or_default().record(&d.state, Instant::now());
             if let Some(t) = d.low_battery_crossed(threshold) {
                 if app.settings.notify_low {
                     let text = format!("{}: {}% maradt. Tedd töltőre.", d.state.name, d.state.level.unwrap_or(t));

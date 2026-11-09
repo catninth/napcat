@@ -139,8 +139,16 @@ fn article(name: &str) -> &'static str {
     if first.is_some_and(|c| "aáeéiíoóöőuúüű".contains(c)) { "Az" } else { "A" }
 }
 
-/// Az állapotsor a név alatt.
-fn status_text(d: &DeviceState) -> &'static str {
+/// Az állapotsor a név alatt, a design szerint a becsléssel: "Lemerülőben · kb. 40 perc",
+/// "Töltés · 1 ó 10 p a telig", "Nincs csatlakoztatva · 2 órája".
+fn status_text(d: &DeviceState) -> String {
+    match &d.estimate {
+        Some(e) => format!("{} · {e}", status_base(d)),
+        None => status_base(d).to_string(),
+    }
+}
+
+fn status_base(d: &DeviceState) -> &'static str {
     match (d.connected, d.charge, d.level) {
         (false, _, _) => "Nincs csatlakoztatva",
         (true, ChargeState::Charging, _) => "Töltés",
@@ -299,7 +307,11 @@ unsafe fn draw_content(
     if let Some(d) = alert_device(devices) {
         p.fill(rect(PAD, y, W - 2.0 * PAD, ALERT), 8.0, theme.alert_bg())?;
         p.icon(icon::WARNING, PAD + 12.0, y + 11.0, 16.0, 2.0, theme.red())?;
-        let msg = format!("{} {} lemerülőben – {} van hátra", article(&d.name), d.name, d.level_text().unwrap_or_default());
+        let left = match &d.estimate {
+            Some(e) => e.clone(),
+            None => d.level_text().unwrap_or_default(),
+        };
+        let msg = format!("{} {} lemerülőben – {left} van hátra", article(&d.name), d.name);
         p.text(&msg, 12.5, DWRITE_FONT_WEIGHT_NORMAL, rect(PAD + 38.0, y, W - 2.0 * PAD - 50.0, ALERT), fg, DWRITE_TEXT_ALIGNMENT_LEADING)?;
         y += ALERT + GAP;
     }
@@ -338,7 +350,7 @@ unsafe fn draw_content(
             let name_color = if d.connected { fg } else { sub };
             p.text(&d.name, 14.0, DWRITE_FONT_WEIGHT_SEMI_BOLD, rect(x, y + 11.0, text_w, 20.0), name_color, DWRITE_TEXT_ALIGNMENT_LEADING)?;
             p.circle(x + 3.0, y + 41.0, 3.0, theme.ring(d))?;
-            p.text(status_text(d), 12.0, DWRITE_FONT_WEIGHT_NORMAL, rect(x + 12.0, y + 33.0, text_w - 12.0, 17.0), sub, DWRITE_TEXT_ALIGNMENT_LEADING)?;
+            p.text(&status_text(d), 12.0, DWRITE_FONT_WEIGHT_NORMAL, rect(x + 12.0, y + 33.0, text_w - 12.0, 17.0), sub, DWRITE_TEXT_ALIGNMENT_LEADING)?;
             let (text, color) = pct(d);
             p.text(&text, 17.0, DWRITE_FONT_WEIGHT_SEMI_BOLD, rect(W - PAD - 8.0 - 70.0, y, 70.0, ROW), color, DWRITE_TEXT_ALIGNMENT_TRAILING)?;
             y += ROW + ROW_GAP;
@@ -424,7 +436,7 @@ mod tests {
                 level_approx: false,
                 charge,
                 connected,
-                hw: None,
+                hw: None, estimate: None,
             };
             let devices = vec![
                 dev("DualShock 4", DeviceKind::Controller, Some(12), ChargeState::Discharging, true),
