@@ -233,7 +233,9 @@ unsafe fn paint(f: &mut Flyout) -> Result<()> {
     GetClientRect(f.hwnd, &mut rc)?;
     let size = D2D_SIZE_U { width: (rc.right - rc.left) as u32, height: (rc.bottom - rc.top) as u32 };
     if f.rt.is_none() {
-        let props = D2D1_RENDER_TARGET_PROPERTIES { dpiX: f.dpi, dpiY: f.dpi, ..Default::default() };
+        // Szoftveres megjelenítés: a kis felülethez nem kell GPU, és így nem töltődik be a videókártya-
+        // meghajtó (Direct3D), ami bezárás után is ~20 MB-ot foglalna.
+        let props = D2D1_RENDER_TARGET_PROPERTIES { r#type: D2D1_RENDER_TARGET_TYPE_SOFTWARE, dpiX: f.dpi, dpiY: f.dpi, ..Default::default() };
         let hwnd_props = D2D1_HWND_RENDER_TARGET_PROPERTIES { hwnd: f.hwnd, pixelSize: size, presentOptions: D2D1_PRESENT_OPTIONS_NONE };
         f.rt = Some(f.renderer.d2d().CreateHwndRenderTarget(&props, &hwnd_props)?);
     }

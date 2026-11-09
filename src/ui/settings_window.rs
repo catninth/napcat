@@ -459,7 +459,9 @@ unsafe fn paint(w: &mut Window) -> Result<()> {
     GetClientRect(w.hwnd, &mut rc)?;
     let size = D2D_SIZE_U { width: (rc.right - rc.left) as u32, height: (rc.bottom - rc.top) as u32 };
     if w.rt.is_none() {
-        let props = D2D1_RENDER_TARGET_PROPERTIES { dpiX: w.dpi, dpiY: w.dpi, ..Default::default() };
+        // Szoftveres megjelenítés: a kis felülethez nem kell GPU, és így nem töltődik be a videókártya-
+        // meghajtó (Direct3D), ami bezárás után is ~20 MB-ot foglalna.
+        let props = D2D1_RENDER_TARGET_PROPERTIES { r#type: D2D1_RENDER_TARGET_TYPE_SOFTWARE, dpiX: w.dpi, dpiY: w.dpi, ..Default::default() };
         let hwnd_props = D2D1_HWND_RENDER_TARGET_PROPERTIES { hwnd: w.hwnd, pixelSize: size, presentOptions: D2D1_PRESENT_OPTIONS_NONE };
         w.rt = Some(w.renderer.d2d().CreateHwndRenderTarget(&props, &hwnd_props)?);
     }
