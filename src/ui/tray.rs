@@ -368,7 +368,7 @@ pub unsafe fn run(hinst: HINSTANCE) -> Result<()> {
     }));
     with_app(|app| {
         worker::set_updates_enabled(app.settings.update_mode != "off");
-        app.sync(hwnd)
+        app.sync(hwnd);
     });
     register_power_notifications(hwnd);
 
@@ -447,6 +447,21 @@ unsafe fn on_devices(hwnd: HWND) {
             }
         }
         app.sync(hwnd);
+        // Első indítás: a Windows 11 az új tálcaikonokat a rejtett területre teszi. Az első
+        // eszközfrissítés után szólunk, hogy az értesítés egy maradandó ikonhoz tartozzon.
+        if !app.settings.pin_tip_shown {
+            app.settings.pin_tip_shown = true;
+            app.settings.save();
+            if let Some(icon) = app.icons_mut().find(|i| i.shown) {
+                icon.notify(
+                    hwnd,
+                    "A NapCat fut",
+                    "Ha nem látod az ikonokat, a tálca ^ gombja alatt vannak. Kitűzés: húzd őket a tálcára, \
+                     vagy Beállítások › Személyre szabás › Tálca › Egyéb tálcaikonok.",
+                    false,
+                );
+            }
+        }
         if app.settings.notify_low {
             for (i, threshold) in warnings {
                 let d = &app.devices[i];

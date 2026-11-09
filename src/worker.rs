@@ -116,6 +116,7 @@ unsafe fn run(hwnd: HWND, tx: Sender<DeviceState>) {
     let mut due: Vec<Option<Instant>> = vec![None; providers.len()];
     let mut last: HashMap<String, DeviceState> = HashMap::new();
     let mut device_change = true;
+    let mut first = true;
     let mut update_due = Instant::now() + UPDATE_FIRST;
     loop {
         let now = Instant::now();
@@ -149,9 +150,11 @@ unsafe fn run(hwnd: HWND, tx: Sender<DeviceState>) {
             let factor = if ON_BATTERY.load(Ordering::Relaxed) { 2 } else { 1 };
             *due = p.poll_interval().map(|i| now + i * factor);
         }
-        if any {
+        // Az első olvasás után mindig jelzünk (akkor is, ha nincs eszköz), hogy a UI tudja: kész.
+        if any || first {
             let _ = PostMessageW(hwnd, WM_DEVICES, WPARAM(0), LPARAM(0));
         }
+        first = false;
 
         // Egyetlen időzítő az egész apphoz: alvás a legközelebbi esedékes olvasásig vagy a
         // következő eszközváltozásig (szünetben csak az utóbbira); utána a további értesítések
