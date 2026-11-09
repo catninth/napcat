@@ -28,6 +28,7 @@ const NAME: DEVPROPKEY = DEVPROPKEY {
     pid: 10,
 };
 
+mod compx;
 mod io;
 mod listen;
 mod via;
@@ -35,12 +36,13 @@ mod via;
 fn main() {
     match std::env::args().nth(1).as_deref() {
         Some("via") => unsafe { via::run() },
+        Some("compx") => unsafe { compx::run() },
         Some("listen") => {
             let secs = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(15);
             unsafe { listen::run(secs) }
         }
         None => list(),
-        Some(_) => println!("használat: napcat-diag [via | listen [mp]]"),
+        Some(_) => println!("használat: napcat-diag [via | compx | listen [mp]]"),
     }
 }
 
@@ -282,6 +284,26 @@ unsafe fn hid_one(path: &[u16]) {
                     "    {} report 0x{:02X}: {} x {} bit (page 0x{:04X} usage 0x{:02X})",
                     report_type_name(rt), vc.ReportID, vc.ReportCount, vc.BitSize, vc.UsagePage, usage
                 );
+            }
+        }
+    }
+
+    // Gyártóspecifikus kollekciónál a "button" típusú reportok ID-i is (pl. bitmezős parancsok).
+    if vendor_page {
+        for (rt, count) in [
+            (HidP_Input, caps.NumberInputButtonCaps),
+            (HidP_Output, caps.NumberOutputButtonCaps),
+            (HidP_Feature, caps.NumberFeatureButtonCaps),
+        ] {
+            if count == 0 {
+                continue;
+            }
+            let mut bcaps = vec![HIDP_BUTTON_CAPS::default(); count as usize];
+            let mut n = count;
+            if HidP_GetButtonCaps(rt, bcaps.as_mut_ptr(), &mut n, pp).is_ok() {
+                for bc in &bcaps[..n as usize] {
+                    println!("    {} report 0x{:02X}: button caps (page 0x{:04X})", report_type_name(rt), bc.ReportID, bc.UsagePage);
+                }
             }
         }
     }
