@@ -1,5 +1,7 @@
 //! Központi típusok, amelyeket a providerek adnak és a UI megjelenít.
 
+// Egyes változatokat csak a későbbi providerek (BT, HID++, XInput…) állítanak elő.
+#[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DeviceKind {
     Mouse,
@@ -9,6 +11,7 @@ pub enum DeviceKind {
     Other,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ChargeState {
     Discharging,
@@ -17,8 +20,7 @@ pub enum ChargeState {
     Unknown,
 }
 
-#[derive(Clone, Debug)]
-#[allow(dead_code)] // az id-t az eszközszál fogja használni
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct DeviceState {
     pub id: String, // stabil azonosító (pl. BT cím, HID path hash)
     pub name: String,

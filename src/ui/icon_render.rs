@@ -242,7 +242,27 @@ unsafe fn to_hicon(px: &[u8], size: u32) -> Result<HICON> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::ChargeState;
     use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
+
+    fn dev(kind: DeviceKind, level: Option<u8>, charge: ChargeState, connected: bool) -> DeviceState {
+        DeviceState { id: "test".into(), name: "Teszt".into(), kind, level, charge, connected }
+    }
+
+    const STATES: &[fn() -> DeviceState] = &[
+        || dev(DeviceKind::Keyboard, Some(72), ChargeState::Discharging, true),
+        || dev(DeviceKind::Keyboard, Some(35), ChargeState::Discharging, true),
+        || dev(DeviceKind::Keyboard, Some(9), ChargeState::Discharging, true),
+        || dev(DeviceKind::Keyboard, Some(52), ChargeState::Charging, true),
+        || dev(DeviceKind::Keyboard, None, ChargeState::Charging, true),
+        || dev(DeviceKind::Keyboard, None, ChargeState::Unknown, true),
+        || dev(DeviceKind::Keyboard, Some(100), ChargeState::Full, true),
+        || dev(DeviceKind::Keyboard, None, ChargeState::Unknown, false),
+        || dev(DeviceKind::Mouse, Some(64), ChargeState::Discharging, true),
+        || dev(DeviceKind::Headset, Some(46), ChargeState::Charging, true),
+        || dev(DeviceKind::Controller, Some(12), ChargeState::Discharging, true),
+        || dev(DeviceKind::Other, Some(88), ChargeState::Discharging, true),
+    ];
 
     /// Előnézeti kép: minden tesztállapot, sötét és világos tálcán, 16/20/24/32 px-en, 4x nagyítva.
     /// Kimenet: target/icon-preview.png (`cargo test preview -- --nocapture`).
@@ -251,7 +271,7 @@ mod tests {
         unsafe {
             let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
             let r = IconRenderer::new().unwrap();
-            let states = crate::ui::tray::TEST_STATES;
+            let states = STATES;
             let sizes = [16u32, 20, 24, 32];
             let themes = [(Theme { light: false }, 0x1C1C1C), (Theme { light: true }, 0xEEEEEE)];
             let (zoom, cell) = (4.0, 144.0);
@@ -268,7 +288,7 @@ mod tests {
                 let x0 = (ti * sizes.len()) as f32 * cell;
                 let bg = rt.CreateSolidColorBrush(&rgb(bg, 1.0), None).unwrap();
                 rt.FillRectangle(&D2D_RECT_F { left: x0, top: 0.0, right: x0 + cell * sizes.len() as f32, bottom: h as f32 }, &bg);
-                for (si, (_, make)) in states.iter().enumerate() {
+                for (si, make) in states.iter().enumerate() {
                     let dev = make();
                     for (zi, &size) in sizes.iter().enumerate() {
                         let px = r.render_pixels(&dev, size, theme).unwrap();

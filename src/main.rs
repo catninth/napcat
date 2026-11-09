@@ -1,7 +1,9 @@
 #![windows_subsystem = "windows"]
 
 mod model;
+mod providers;
 mod ui;
+mod worker;
 
 use std::ffi::c_void;
 use std::mem::size_of;
