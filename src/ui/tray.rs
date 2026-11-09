@@ -16,7 +16,7 @@ use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use super::flyout;
-use super::icon_render::IconRenderer;
+use super::icon_render::{IconRenderer, Layout};
 use super::theme::Theme;
 use crate::model::{ChargeState, DeviceKind, DeviceState};
 use crate::settings::{self, Settings};
@@ -33,6 +33,7 @@ const ID_AUTOSTART: usize = 101;
 const ID_NOTIFY_LOW: usize = 102;
 const ID_HIDE: usize = 103;
 const ID_SHOW_BASE: usize = 200;
+const ID_STYLE_BASE: usize = 300;
 
 /// Alacsony akku értesítés küszöbei (%), mindegyiknél egyszer szól.
 const LOW_THRESHOLDS: [u8; 2] = [15, 5];
@@ -55,11 +56,13 @@ struct IconKey {
     kind: DeviceKind,
     theme: Theme,
     size: u32,
+    layout: Layout,
 }
 
 impl IconKey {
-    fn new(d: &DeviceState, theme: Theme, size: u32) -> IconKey {
-        IconKey { level: d.level.map(|l| (l + 2) / 5 * 5), charge: d.charge, connected: d.connected, kind: d.kind, theme, size }
+    fn new(d: &DeviceState, theme: Theme, size: u32, layout: Layout) -> IconKey {
+        let level = d.level.map(|l| (l + 2) / 5 * 5);
+        IconKey { level, charge: d.charge, connected: d.connected, kind: d.kind, theme, size, layout }
     }
 }
 
@@ -279,6 +282,7 @@ fn with_app<R: Default>(f: impl FnOnce(&mut App) -> R) -> R {
 unsafe fn render_changed(hwnd: HWND, app: &mut App) -> bool {
     let size = GetSystemMetricsForDpi(SM_CXSMICON, GetDpiForWindow(hwnd)) as u32;
     let theme = Theme::current();
+    let layout = Layout::from_key(&app.settings.icon_style);
     let hidden = app.settings.hidden.clone();
     let any_visible = app.devices.iter().any(|d| !hidden.contains(&d.state.id));
     // A rajzoló (D2D, DirectWrite, WIC) csak a rajzolás idejére él: ritkán kell, és így
@@ -287,13 +291,16 @@ unsafe fn render_changed(hwnd: HWND, app: &mut App) -> bool {
     let mut changed = false;
     for icon in app.icons_mut() {
         let wanted = if icon.is_placeholder() { !any_visible } else { !hidden.contains(&icon.state.id) };
-        let key = IconKey::new(&icon.state, theme, size);
+        let key = IconKey::new(&icon.state, theme, size, layout);
         if !wanted || icon.key == Some(key) {
             continue;
         }
         if renderer.is_none() {
             match IconRenderer::new() {
-                Ok(r) => renderer = Some(r),
+                Ok(mut r) => {
+                    r.tray_layout = layout;
+                    renderer = Some(r)
+                }
                 Err(_) => break,
             }
         }
@@ -398,6 +405,12 @@ unsafe fn show_menu(hwnd: HWND, uid: u32, x: i32, y: i32) {
             let _ = AppendMenuW(menu, MF_POPUP, sub.0 as usize, w!("Rejtett eszközök megjelenítése"));
         }
     }
+    if let Ok(sub) = CreatePopupMenu() {
+        for (i, (_, key, label)) in Layout::ALL.iter().enumerate() {
+            let _ = AppendMenuW(sub, MF_STRING | check(settings.icon_style == *key), ID_STYLE_BASE + i, text(label.to_string()));
+        }
+        let _ = AppendMenuW(menu, MF_POPUP, sub.0 as usize, w!("Ikon stílusa"));
+    }
     let _ = AppendMenuW(menu, MF_STRING | check(settings::autostart_enabled()), ID_AUTOSTART, w!("Indítás a Windows-zal"));
     let _ = AppendMenuW(menu, MF_STRING | check(settings.notify_low), ID_NOTIFY_LOW, w!("Értesítés alacsony akkuszintnél"));
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
@@ -426,6 +439,13 @@ unsafe fn on_command(hwnd: HWND, uid: u32, cmd: usize) {
         ID_HIDE => with_app(|app| {
             if let Some(d) = app.devices.iter().find(|d| d.uid == uid) {
                 app.settings.hidden.push(d.state.id.clone());
+                app.settings.save();
+                app.sync(hwnd);
+            }
+        }),
+        _ if cmd >= ID_STYLE_BASE => with_app(|app| {
+            if let Some((_, key, _)) = Layout::ALL.get(cmd - ID_STYLE_BASE) {
+                app.settings.icon_style = key.to_string();
                 app.settings.save();
                 app.sync(hwnd);
             }

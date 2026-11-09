@@ -15,6 +15,7 @@ use windows::Win32::Graphics::Imaging::*;
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
 use windows::Win32::UI::WindowsAndMessaging::{CreateIconIndirect, HICON, ICONINFO};
 
+use super::glyphs;
 use super::theme::{rgb, Theme};
 use crate::model::{DeviceKind, DeviceState};
 
@@ -28,8 +29,19 @@ pub enum Layout {
     /// (töltés közben villám), ahogy a tálcaikonok állapotjelvényei szokták.
     Pie,
     /// Teljes szélességű glyph, alatta vékony töltöttségi sáv.
-    #[allow(dead_code)] // választható elrendezés, a beállításokból lesz elérhető
     Bar,
+}
+
+impl Layout {
+    pub const ALL: [(Layout, &'static str, &'static str); 3] = [
+        (Layout::Ring, "ring", "Gyűrű (design)"),
+        (Layout::Pie, "pie", "Nagy glyph + sarokjelvény"),
+        (Layout::Bar, "bar", "Nagy glyph + sáv"),
+    ];
+
+    pub fn from_key(key: &str) -> Layout {
+        Layout::ALL.iter().find(|(_, k, _)| *k == key).map_or(Layout::Ring, |(l, _, _)| *l)
+    }
 }
 
 pub struct IconRenderer {
@@ -81,7 +93,7 @@ impl IconRenderer {
             } else {
                 w!("Segoe MDL2 Assets")
             };
-            Ok(IconRenderer { d2d, wic, dwrite, glyph_font, tray_layout: Layout::Pie })
+            Ok(IconRenderer { d2d, wic, dwrite, glyph_font, tray_layout: Layout::Ring })
         }
     }
 
@@ -148,9 +160,25 @@ impl IconRenderer {
                 if let (true, Some(level)) = (dev.connected, dev.level) {
                     self.arc(rt, c, r, sw, level as f32 / 100.0, &ring)?;
                 }
-                // A glyph a gyűrű belsejébe: a befoglaló téglalap átlója a belső átmérő; a glyph-ek
-                // sarkai lekerekítettek, ezért kicsit nagyobbra vehető.
-                self.glyph(rt, dev, theme, c, c, Fit::Circle(1.12 * (r - sw / 2.0 - s * 0.02)))?;
+                // A glyph a gyűrű belsejébe: a design vonalas rajza, ha van, különben a betűtípusé
+                // (a befoglaló téglalap átlója a belső átmérő; a sarkok lekerekítettek).
+                if let Some(d) = glyphs::path(dev.kind) {
+                    // A design "Tálca méretek" táblázata: a 24-es glyph nagyítása és vonalvastagsága.
+                    let (scale, width) = match s as u32 {
+                        ..=16 => (1.0, 3.0),
+                        17..=20 => (1.0, 2.6),
+                        21..=24 => (0.95, 2.3),
+                        25..=32 => (0.95, 2.0),
+                        _ => (0.9167, 1.7),
+                    };
+                    let u = s / 48.0;
+                    let off = (48.0 - 24.0 * scale) / 2.0 * u;
+                    let geo = glyphs::geometry(&self.d2d, d, scale * u, off, off)?;
+                    let brush = rt.CreateSolidColorBrush(&theme.fg(if dev.connected { 1.0 } else { 0.45 }), None)?;
+                    rt.DrawGeometry(&geo, &brush, width * scale * u, &self.stroke_style(&[])?);
+                } else {
+                    self.glyph(rt, dev, theme, c, c, Fit::Circle(1.12 * (r - sw / 2.0 - s * 0.02)))?;
+                }
                 if dev.is_charging() {
                     self.bolt_badge(rt, s * 39.0 / 48.0, s * 39.0 / 48.0, s * 8.0 / 48.0, s * 2.5 / 48.0, &ring, &cut)?;
                 }
@@ -338,12 +366,15 @@ enum Fit {
     Box(D2D_RECT_F),
 }
 
-/// Kis méretben arányaiban vastagabb gyűrű, hogy 16 px-en is olvasható maradjon (16 px -> 2 px).
+/// Gyűrű vastagság a design szerint: kis méretben arányaiban vastagabb, hogy 16 px-en is
+/// olvasható maradjon (16 px -> 2,3 px), a panelen (40-48 px) vékony.
 fn ring_width(s: f32) -> f32 {
     let units = match s as u32 {
-        ..=20 => 6.0,
+        ..=16 => 7.0,
+        17..=20 => 6.0,
         21..=24 => 5.0,
-        _ => 4.0,
+        25..=32 => 4.0,
+        _ => 3.0,
     };
     s * units / 48.0
 }

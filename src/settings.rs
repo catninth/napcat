@@ -15,11 +15,13 @@ pub struct Settings {
     pub hidden: Vec<String>,
     /// Értesítés 15%-nál és 5%-nál.
     pub notify_low: bool,
+    /// A tálcaikon elrendezése: "ring", "pie" vagy "bar".
+    pub icon_style: String,
 }
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings { hidden: Vec::new(), notify_low: true }
+        Settings { hidden: Vec::new(), notify_low: true, icon_style: "ring".into() }
     }
 }
 
@@ -36,6 +38,7 @@ impl Settings {
             let value = value.trim();
             match key.trim() {
                 "notify_low" => s.notify_low = value != "false",
+                "icon_style" => s.icon_style = value.trim_matches('"').to_string(),
                 "hidden" => {
                     s.hidden = value
                         .trim_start_matches('[')
@@ -57,7 +60,12 @@ impl Settings {
             let _ = std::fs::create_dir_all(dir);
         }
         let hidden: Vec<String> = self.hidden.iter().map(|h| format!("\"{}\"", h.replace('"', ""))).collect();
-        let text = format!("# NapCat beállítások\nnotify_low = {}\nhidden = [{}]\n", self.notify_low, hidden.join(", "));
+        let text = format!(
+            "# NapCat beállítások\nnotify_low = {}\nicon_style = \"{}\"\nhidden = [{}]\n",
+            self.notify_low,
+            self.icon_style.replace('"', ""),
+            hidden.join(", ")
+        );
         let _ = std::fs::write(path, text);
     }
 }
