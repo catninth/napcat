@@ -35,6 +35,18 @@ impl DeviceState {
         self.connected && self.charge == ChargeState::Charging
     }
 
+    /// Rövid állapot a felugró panelhez, pl. "Tölt" vagy "Csatlakoztatva, szint ismeretlen".
+    pub fn status(&self) -> &'static str {
+        match (self.connected, self.charge, self.level) {
+            (false, _, _) => "Nincs csatlakoztatva",
+            (true, ChargeState::Charging, _) => "Tölt",
+            (true, ChargeState::Full, _) => "Feltöltve",
+            (true, ChargeState::Discharging, _) => "Nem tölt",
+            (true, ChargeState::Unknown, None) => "Csatlakoztatva, szint ismeretlen",
+            (true, ChargeState::Unknown, Some(_)) => "Csatlakoztatva",
+        }
+    }
+
     /// Tooltip szöveg, pl. "Logitech G305 – 72% – nem tölt".
     pub fn tooltip(&self) -> String {
         if !self.connected {

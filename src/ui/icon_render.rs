@@ -59,7 +59,7 @@ impl IconRenderer {
             rt.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
             rt.BeginDraw();
             rt.Clear(Some(&rgb(0, 0.0)));
-            self.draw(&rt, dev, size as f32, theme)?;
+            self.draw(&rt, dev, size as f32, theme, None)?;
             rt.EndDraw(None, None)?;
 
             let mut px = vec![0u8; (size * size * 4) as usize];
@@ -68,7 +68,18 @@ impl IconRenderer {
         }
     }
 
-    unsafe fn draw(&self, rt: &ID2D1DeviceContext, dev: &DeviceState, s: f32, theme: Theme) -> Result<()> {
+    pub fn d2d(&self) -> &ID2D1Factory1 {
+        &self.d2d
+    }
+
+    pub fn dwrite(&self) -> &IDWriteFactory {
+        &self.dwrite
+    }
+
+    /// Glyph + gyűrű rajzolása `s` méretben a (0,0) ponttól (más helyre a hívó transzformációjával).
+    /// `bg`: a háttér színe, ha átlátszatlan felületre rajzolunk (felugró panel); `None` esetén
+    /// a töltés jelvény körüli rés átlátszó kivágás (tálcaikon).
+    pub unsafe fn draw(&self, rt: &ID2D1DeviceContext, dev: &DeviceState, s: f32, theme: Theme, bg: Option<D2D1_COLOR_F>) -> Result<()> {
         let c = s / 2.0;
         let sw = ring_width(s);
         let r = c - sw / 2.0;
@@ -100,18 +111,21 @@ impl IconRenderer {
         let origin = D2D_POINT_2F { x: c - (ink.left + ink.width / 2.0) * k, y: c - (ink.top + ink.height / 2.0) * k };
         rt.DrawTextLayout(origin, &layout, &glyph, D2D1_DRAW_TEXT_OPTIONS_NONE);
 
-        // Töltés: villám jelvény a jobb alsó sarokban. A körvonal és a villám "kivágás"
-        // (átlátszóvá tett pixelek), így bármilyen tálcaháttéren olvasható.
+        // Töltés: villám jelvény a jobb alsó sarokban. A körvonal és a villám "kivágás": a tálcán
+        // átlátszóvá tett pixelek (bármilyen háttéren olvasható), a panelen a háttér színe.
         if dev.is_charging() {
             let k = s / 48.0;
             let badge = D2D1_ELLIPSE { point: D2D_POINT_2F { x: 39.0 * k, y: 39.0 * k }, radiusX: 8.0 * k, radiusY: 8.0 * k };
-            let clear = rt.CreateSolidColorBrush(&rgb(0, 0.0), None)?;
-            rt.SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_COPY);
+            let (clear, cut_blend) = match bg {
+                None => (rt.CreateSolidColorBrush(&rgb(0, 0.0), None)?, D2D1_PRIMITIVE_BLEND_COPY),
+                Some(color) => (rt.CreateSolidColorBrush(&color, None)?, D2D1_PRIMITIVE_BLEND_SOURCE_OVER),
+            };
+            rt.SetPrimitiveBlend(cut_blend);
             let knockout = D2D1_ELLIPSE { radiusX: 10.5 * k, radiusY: 10.5 * k, ..badge };
             rt.FillEllipse(&knockout, &clear);
             rt.SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_SOURCE_OVER);
             rt.FillEllipse(&badge, &ring);
-            rt.SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_COPY);
+            rt.SetPrimitiveBlend(cut_blend);
             let bolt = [(40.2, 33.8), (35.6, 40.0), (38.9, 40.0), (38.3, 44.2), (42.9, 38.0), (39.6, 38.0)];
             let geo = self.d2d.CreatePathGeometry()?;
             let sink = geo.Open()?;

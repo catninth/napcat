@@ -38,6 +38,15 @@ impl Theme {
         if self.light { rgb(0x17171A, alpha) } else { rgb(0xF2F2F3, alpha) }
     }
 
+    /// A felugró panel háttere, fő és másodlagos szövegszíne.
+    pub fn panel(&self) -> D2D1_COLOR_F {
+        if self.light { rgb(0xFAFAFB, 1.0) } else { rgb(0x1F2024, 1.0) }
+    }
+
+    pub fn sub(&self) -> D2D1_COLOR_F {
+        if self.light { rgb(0x52525B, 1.0) } else { rgb(0xA3A3AD, 1.0) }
+    }
+
     pub fn track(&self) -> D2D1_COLOR_F {
         self.fg(if self.light { 0.14 } else { 0.18 })
     }

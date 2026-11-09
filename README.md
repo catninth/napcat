@@ -16,6 +16,7 @@ no WebView, no UI framework, and practically zero CPU when idle.
 | M1 – ring icon rendering (Direct2D) | done |
 | Device thread + cable/dongle detection | done |
 | Installer (Inno Setup) + release workflow | done, not yet released |
+| Flyout panel (left click), tray menu, hide devices, autostart, low battery notifications | done |
 | Auto-update | planned |
 | Bluetooth, vendor protocols (Logitech HID++, DualSense, XInput, …) | planned |
 

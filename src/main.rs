@@ -2,6 +2,7 @@
 
 mod model;
 mod providers;
+mod settings;
 mod ui;
 mod worker;
 
