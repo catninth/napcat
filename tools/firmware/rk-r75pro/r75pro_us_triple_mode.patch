@@ -1,0 +1,78 @@
+diff -ru /d/Downloads/r75pro_us_triple_mode/config.h r75pro_us_triple_mode/config.h
+--- a/r75pro_us_triple_mode/config.h	2026-05-23 12:28:22.897289000 +0200
++++ b/r75pro_us_triple_mode/config.h	2026-11-10 19:16:08.147223800 +0100
+@@ -61,6 +61,13 @@
+ #define SD1_TX_PIN C10
+ #define SD1_RX_PIN C11
+ 
++/* QMK 0.28 UART nevek ugyanazokra a lábakra (a linker/wireless meghajtó uart_* hívásaihoz) */
++#define UART_DRIVER SD3
++#define UART_TX_PIN C10
++#define UART_TX_PAL_MODE 7
++#define UART_RX_PIN C11
++#define UART_RX_PAL_MODE 7
++
+ /* Encoder */
+ #define ENCODER_MAP_KEY_DELAY               1
+ #define ENCODER_RESOLUTION                  4
+diff -ru /d/Downloads/r75pro_us_triple_mode/wls/wls.c r75pro_us_triple_mode/wls/wls.c
+--- a/r75pro_us_triple_mode/wls/wls.c	2026-05-22 12:32:46.848256400 +0200
++++ b/r75pro_us_triple_mode/wls/wls.c	2026-11-10 19:17:12.214583200 +0100
+@@ -297,17 +297,32 @@
+     }
+ }
+ 
++/// NapCat akkulekérdezés: id_custom_get_value, id_custom_channel, id_battery.
++static bool is_battery_query(const uint8_t *data) {
++    return data[0] == id_custom_get_value && data[1] == id_custom_channel && data[2] == id_battery;
++}
++
+ void via_custom_value_command_kb(uint8_t *data, uint8_t length) {
+     // data = [ command_id, channel_id, value_id, value_data ]
+     uint8_t *command_id = &(data[0]);
+     uint8_t *value_id   = &(data[2]);
+     uint8_t *value_data = &(data[3]);
+ 
+-    hs_rgb_blink_set_timer(timer_read32());
++    // Az akkulekérdezés ne számítson használatnak, különben a rendszeres lekérdezés nem hagyná elaludni.
++    if (!is_battery_query(data)) {
++        hs_rgb_blink_set_timer(timer_read32());
++    }
+ 
+     switch (*command_id) {
+         case id_custom_get_value: {
+             switch (*value_id) {
++                case id_battery: {
++                    // A modultól legutóbb kapott szint, és a kábel / tele lábak, ahogy hs_send_bat_status is olvassa.
++                    extern bool charging_state;
++                    extern bool bat_full_flag;
++                    value_data[0] = *md_getp_bat();
++                    value_data[1] = charging_state ? (bat_full_flag ? 2 : 1) : 0;
++                } break;
+                 case id_sleep_timeout: {
+                     value_data[0] = hs_get_sleep_timeout();
+                 } break;
+@@ -363,8 +378,10 @@
+ }
+ 
+ bool via_command_kb(uint8_t *data, uint8_t length) {
+-    
+-    hs_rgb_blink_set_timer(timer_read32());
++
++    if (!is_battery_query(data)) {
++        hs_rgb_blink_set_timer(timer_read32());
++    }
+     
+     // if (hs_via_custom_value_command_kb(data, length) != false){
+     //     replaced_hid_send(data, length);
+diff -ru /d/Downloads/r75pro_us_triple_mode/wls/wls.h r75pro_us_triple_mode/wls/wls.h
+--- a/r75pro_us_triple_mode/wls/wls.h	2026-05-23 09:50:11.133496300 +0200
++++ b/r75pro_us_triple_mode/wls/wls.h	2026-11-10 19:16:56.574492500 +0100
+@@ -53,6 +53,7 @@
+     id_rgbrec_channel,
+     id_rgbrec_hs_data,
+     id_rgbrec_hs_buffer,
++    id_battery, // 0x05, csak olvasható: [szint %, 0 merül / 1 tölt / 2 tele] (NapCat)
+ };
+ 
+ extern bool lower_sleep;

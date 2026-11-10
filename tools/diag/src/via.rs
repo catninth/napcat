@@ -14,6 +14,8 @@ const QUERIES: &[(&str, &[u8])] = &[
     // id_custom_get_value, csatorna 0 (id_custom_channel), érték 1: az RK R75 Pro firmware-ében az
     // alvási idő (wls.c). Ha erre jön értelmes válasz, a kérés a billentyűzet saját kódjáig eljut.
     ("alvási idő (RK)", &[0x08, 0x00, 0x01]),
+    // A NapCat-hez módosított R75 Pro firmware akkuértéke: [08 00 05 szint% állapot]; gyári firmware-en FF.
+    ("akku (RK NapCat)", &[0x08, 0x00, 0x05]),
 ];
 
 pub unsafe fn run() {

@@ -128,6 +128,44 @@ mod tests {
         assert_eq!(parse(&[0x08, 0x00, 0x01, 7]), None); // más érték válasza
     }
 
+    /// A billentyűzeten futó kiosztás (VIA id_dynamic_keymap_get_keycode, csak olvas): hol van a
+    /// QK_BOOT (0x7C00) és a MO() rétegváltók (0x5220 + réteg).
+    /// `cargo test rk_keymap -- --ignored --nocapture`
+    #[test]
+    #[ignore = "a csatlakoztatott hardvertől függ"]
+    fn rk_keymap() {
+        let all = hid::interfaces();
+        let i = all.iter().find(|i| i.vid == RK && i.pid == R75_PRO && i.usage_page == 0xFF60).expect("VIA interfész");
+        println!("kapcsolat: {}", i.product);
+        let dev = Device::open(&i.path).expect("megnyitás");
+        let ask = |cmd: &[u8]| -> Option<Vec<u8>> {
+            let mut msg = vec![0u8; i.output_len as usize];
+            msg[1..1 + cmd.len()].copy_from_slice(cmd);
+            dev.write(&msg, 300).then_some(())?;
+            for _ in 0..5 {
+                let r = dev.read(i.input_len as usize, 500)?;
+                if r[1] == cmd[0] || r[1] == 0xFF {
+                    return Some(r[1..].to_vec());
+                }
+            }
+            None
+        };
+        let layers = ask(&[0x11]).map(|r| r[1]).unwrap_or(5); // id_dynamic_keymap_get_layer_count
+        println!("rétegek: {layers}");
+        for layer in 0..layers {
+            for row in 0..6u8 {
+                for col in 0..15u8 {
+                    let Some(r) = ask(&[0x04, layer, row, col]) else { continue };
+                    let kc = u16::from_be_bytes([r[4], r[5]]);
+                    if kc == 0x7C00 || (0x5220..=0x523F).contains(&kc) {
+                        let what = if kc == 0x7C00 { "QK_BOOT".to_string() } else { format!("MO({})", kc - 0x5220) };
+                        println!("réteg {layer} sor {row} oszlop {col}: {what}");
+                    }
+                }
+            }
+        }
+    }
+
     /// `cargo test rk_present -- --ignored --nocapture`
     #[test]
     #[ignore = "a csatlakoztatott hardvertől függ"]

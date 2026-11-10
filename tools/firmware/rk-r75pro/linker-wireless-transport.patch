@@ -1,0 +1,19 @@
+--- a/keyboards/royalkludge/linker/wireless/transport.c	2026-11-10 20:32:55.275370100 +0100
++++ b/keyboards/royalkludge/linker/wireless/transport.c	2026-11-10 18:35:44.627619300 +0100
+@@ -4,6 +4,7 @@
+ #include "quantum.h"
+ #include "module.h"
+ #include "usb_main.h"
++#include "usb_device_state.h"
+ #include "transport.h"
+ 
+ #ifndef USB_POWER_DOWN_DELAY
+@@ -22,7 +23,7 @@
+     if (enable) {
+         if (host_get_driver() != &wireless_driver) {
+             host_set_driver(&wireless_driver);
+-            keyboard_protocol = true; // default with true
++            usb_device_state_set_protocol(USB_PROTOCOL_REPORT); // QMK 0.28: korábban keyboard_protocol = true
+         }
+     } else {
+         if (*md_getp_state() == MD_STATE_CONNECTED) {
