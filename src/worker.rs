@@ -37,6 +37,9 @@ use crate::providers::{playstation::PlayStation, wired_detect::WiredDetect, xinp
 
 /// A UI ablaknak küldött üzenet: új állapotok várnak a csatornán.
 pub const WM_DEVICES: u32 = WM_APP + 2;
+/// A UI ablaknak küldött üzenet: lefutott egy olvasás, de egyik eszköz állapota sem változott
+/// (a "Frissítve" időhöz).
+pub const WM_READ: u32 = WM_APP + 10;
 
 /// Ennyi ideig gyűjtjük az egymás utáni eszközértesítéseket egy újraolvasás előtt.
 const SETTLE_MS: u32 = 300;
@@ -175,10 +178,12 @@ unsafe fn run(hwnd: HWND, tx: Sender<DeviceState>) {
             }
         }
         let mut any = false;
+        let mut read = false;
         for (p, due) in providers.iter_mut().zip(due.iter_mut()) {
             if !device_change && !due.is_some_and(|d| d <= now) {
                 continue;
             }
+            read = true;
             let states = p.scan();
             log(&format!("olvasás ({}): {} eszköz", if device_change { "esemény" } else { "időzített" }, states.len()));
             for state in states {
@@ -197,6 +202,8 @@ unsafe fn run(hwnd: HWND, tx: Sender<DeviceState>) {
         // Az első olvasás után mindig jelzünk (akkor is, ha nincs eszköz), hogy a UI tudja: kész.
         if any || first {
             let _ = PostMessageW(hwnd, WM_DEVICES, WPARAM(0), LPARAM(0));
+        } else if read {
+            let _ = PostMessageW(hwnd, WM_READ, WPARAM(0), LPARAM(0));
         }
         first = false;
 

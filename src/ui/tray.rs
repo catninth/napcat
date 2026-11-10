@@ -35,7 +35,7 @@ use crate::providers::custom;
 use crate::settings::{self, Settings};
 use crate::i18n::t;
 use crate::updater;
-use crate::worker::{self, WM_DEVICES, WM_UPDATE};
+use crate::worker::{self, WM_DEVICES, WM_READ, WM_UPDATE};
 
 const WM_TRAY: u32 = WM_APP + 1;
 const PLACEHOLDER_UID: u32 = 1;
@@ -926,6 +926,17 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             }
             WM_DEVICES => {
                 on_devices(hwnd);
+                LRESULT(0)
+            }
+            WM_READ => {
+                // Olvasás változás nélkül: csak a "Frissítve" idő (és a nyitott panel szövege).
+                let states = with_app(|app| {
+                    app.last_update = Some(Instant::now());
+                    app.active_states()
+                });
+                if flyout::is_open() {
+                    flyout::update(&states, Some(0));
+                }
                 LRESULT(0)
             }
             WM_UPDATE => {
