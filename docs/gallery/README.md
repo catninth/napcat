@@ -6,17 +6,17 @@ ClipCat and GitCat galleries. Click any image to open the full-resolution PNG.
 The flyout panel, tooltip and settings window are drawn by NapCat's own Direct2D code into an
 offscreen bitmap at 2× resolution (192 DPI), so they show the window contents without the Windows
 frame and title bar. Settings pages are captured at their full scrolling height. Tray icons are the
-real 32 px icons a 200% taskbar uses, enlarged 2× pixel for pixel. The notifications are real
-Windows toasts sent by NapCat and cropped from the screen at 100% scale.
+real 32 px icons a 200% taskbar uses, enlarged 2× pixel for pixel.
+Notification screenshots are not included yet: they are real Windows toasts, captured from the screen.
 
 The devices are simulated: a VGN Dragonfly F1 at 50%, an MCHOSE A7 V2 Ultra+ charging, an RK R75
 Pro keyboard at 9%, a DualShock 4, a Logitech G435 with an unknown level and a disconnected Xbox
 controller. The accent color is fixed to the design blue so the images don't depend on the
 Windows accent color. The interface is NapCat v0.1.1 at commit `5905a55`. To recreate the images,
-run `cargo test --release ui::gallery -- --ignored --test-threads=1` (the toast capture shows two
+run `cargo test --release ui::gallery -- --ignored --test-threads=1` (the toast capture, `gallery_toasts`, shows two
 notifications on screen and expects the dark Windows theme).
 
-[Flyout panel](#flyout-panel) · [Tooltip](#tooltip) · [Settings](#settings) · [Devices](#devices) · [Tray icons](#tray-icons) · [Notifications](#notifications)
+[Flyout panel](#flyout-panel) · [Tooltip](#tooltip) · [Settings](#settings) · [Devices](#devices) · [Tray icons](#tray-icons)
 
 ## Flyout panel
 
@@ -115,19 +115,3 @@ notifications on screen and expects the dark Windows theme).
   </tr>
 </table>
 
-## Notifications
-
-<table>
-  <tr>
-    <td width="50%" valign="top">
-      <a href="notifications/low-battery.png"><img src="notifications/low-battery.png" alt="NapCat low-battery notification" width="100%"></a><br>
-      <strong>Low battery</strong><br>
-      At the configured threshold, with a 30-minute snooze; held back while a full-screen app is running.
-    </td>
-    <td width="50%" valign="top">
-      <a href="notifications/fully-charged.png"><img src="notifications/fully-charged.png" alt="NapCat fully charged notification" width="100%"></a><br>
-      <strong>Fully charged</strong><br>
-      Tells you when a device can come off the charger.
-    </td>
-  </tr>
-</table>

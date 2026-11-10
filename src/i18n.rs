@@ -1,5 +1,5 @@
-//! A felület nyelve: magyar vagy angol. Alapból a Windows megjelenítési nyelvét követi (magyar
-//! Windowson magyar, minden máson angol); a beállításokban felülírható.
+//! A felület nyelve: angol (alapértelmezés) vagy magyar; "auto" esetén a Windows megjelenítési nyelvét követi (magyar
+//! Windowson magyar, minden máson angol). A beállításokban választható.
 //!
 //! A szövegek a hívás helyén vannak, párban: `t("magyar", "English")`.
 
@@ -11,8 +11,8 @@ static ENGLISH: AtomicBool = AtomicBool::new(false);
 pub fn set(setting: &str) {
     let english = match setting {
         "hu" => false,
-        "en" => true,
-        _ => !system_is_hungarian(),
+        "auto" => !system_is_hungarian(),
+        _ => true,
     };
     ENGLISH.store(english, Ordering::Relaxed);
 }

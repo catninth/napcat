@@ -71,7 +71,7 @@ pub struct Settings {
     pub ring_accent: bool,
     /// Frissítési gyakoriság másodpercben (30, 60, 300); a providerek időközei ehhez arányosak.
     pub poll_secs: u32,
-    /// A felület nyelve: "auto" (a Windows nyelve), "hu" vagy "en".
+    /// A felület nyelve: "en" (alapértelmezés), "hu" vagy "auto" (a Windows nyelve).
     pub language: String,
     /// Frissítések: "auto" (letölt és telepít), "notify" (csak szól) vagy "off".
     pub update_mode: String,
@@ -100,7 +100,7 @@ impl Default for Settings {
             custom_accent: None,
             ring_accent: false,
             poll_secs: 60,
-            language: "auto".into(),
+            language: "en".into(),
             update_mode: "notify".into(),
             pin_tip_shown: false,
             flyout_grid: false,

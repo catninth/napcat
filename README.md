@@ -38,20 +38,21 @@ no WebView, no UI framework, and practically zero CPU when idle.
       Remove, retype or add devices, including ones Windows detects but NapCat has no protocol for.
     </td>
     <td width="50%" valign="top">
-      <a href="docs/gallery/notifications/low-battery.png"><img src="docs/gallery/notifications/low-battery.png" alt="NapCat low-battery notification with snooze" width="364"></a><br>
-      <strong>Low battery</strong><br>
-      A notification with snooze, held back while a game or film is in full screen.
-      <br><br>
       <a href="docs/gallery/tooltip/dark.png"><img src="docs/gallery/tooltip/dark.png" alt="NapCat rich tooltip" width="300"></a><br>
       <strong>Tooltip</strong><br>
       Hover a tray icon for the details.
+      <br><br>
+      <a href="docs/gallery/flyout/list-light.png"><img src="docs/gallery/flyout/list-light.png" alt="NapCat flyout panel, light theme" width="300"></a><br>
+      <strong>Light theme</strong><br>
+      Follows Windows, or pick dark or light in settings.
     </td>
   </tr>
 </table>
 
-The [settings page](docs/gallery/settings/general-dark.png) shows the version and installs updates
-with one click. Screenshots show the English UI with simulated devices; the
-[full gallery](docs/gallery/README.md) has all 14 images and capture details.
+The [settings page](docs/gallery/settings/general-dark.png) has the language (English by default,
+Hungarian built in), shows the version and installs updates with one click. Screenshots show the
+English UI with simulated devices; the [full gallery](docs/gallery/README.md) has every image and
+capture details.
 
 ## Status
 

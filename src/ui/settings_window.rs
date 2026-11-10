@@ -719,7 +719,7 @@ impl Ui<'_> {
         let cy = self.row(&mut y, t("Téma", "Theme"), None)?;
         self.segmented(right, cy, &[("system", t("Rendszer", "System")), ("dark", t("Sötét", "Dark")), ("light", t("Világos", "Light"))], &s.theme, Act::Theme)?;
         let cy = self.row(&mut y, t("Nyelv", "Language"), None)?;
-        self.segmented(right, cy, &[("auto", t("Rendszer", "System")), ("hu", "Magyar"), ("en", "English")], &s.language, Act::Language)?;
+        self.segmented(right, cy, &[("en", "English"), ("hu", "Magyar"), ("auto", t("Rendszer", "System"))], &s.language, Act::Language)?;
         y += SECTION_GAP - ROW_GAP;
 
         // Kiemelő szín
