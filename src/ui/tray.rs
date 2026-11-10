@@ -159,6 +159,8 @@ struct TrayIcon {
     full_notified: bool,
     /// "Egy ikon" módban az összes eszköz összesítése a tooltipben.
     summary: Option<String>,
+    /// A provider által adott típus (a felhasználó felülírhatja a beállításokban).
+    orig_kind: DeviceKind,
 }
 
 impl TrayIcon {
@@ -177,6 +179,7 @@ impl TrayIcon {
             warned: 100,
             full_notified: true, // induláskor egy már teli eszközről nem szólunk
             summary: None,
+            orig_kind: DeviceKind::Other,
         }
     }
 
@@ -282,6 +285,19 @@ impl TrayIcon {
         Some(crossed)
     }
 
+    /// A provider típusát megjegyzi, és a felhasználói felülírást alkalmazza (friss állapot után).
+    fn apply_kind(&mut self, settings: &Settings) {
+        self.orig_kind = self.state.kind;
+        if let Some(k) = settings.kind_override(&self.state.id) {
+            self.state.kind = custom::kind_from_str(k);
+        }
+    }
+
+    /// Beállításváltozáskor: vissza a provider típusára, mielőtt az új felülírás érvényesül.
+    fn restore_kind(&mut self) {
+        self.state.kind = self.orig_kind;
+    }
+
     /// Most lett teli (töltés vége vagy 100% töltés közben); merüléskor újra élesedik.
     fn full_reached(&mut self) -> bool {
         let d = &self.state;
@@ -380,8 +396,13 @@ impl App {
             keep
         });
         worker::refresh_now();
+        let settings = self.settings.clone();
+        for d in self.devices.iter_mut() {
+            d.restore_kind();
+            d.apply_kind(&settings);
+        }
         for icon in self.icons_mut() {
-            icon.key = None; // szín vagy elrendezés változhatott: újrarajzolás
+            icon.key = None; // szín, elrendezés vagy típus változhatott: újrarajzolás
         }
         self.sync(hwnd);
     }
@@ -584,10 +605,12 @@ unsafe fn on_devices(hwnd: HWND) {
             let index = match app.devices.iter().position(|d| d.state.id == state.id) {
                 Some(i) => {
                     app.devices[i].state = state;
+                    app.devices[i].apply_kind(&app.settings);
                     i
                 }
                 None => {
                     app.devices.push(TrayIcon::new(app.next_uid, state));
+                    app.devices.last_mut().unwrap().apply_kind(&app.settings);
                     app.next_uid += 1;
                     app.devices.len() - 1
                 }

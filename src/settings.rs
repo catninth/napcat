@@ -45,6 +45,8 @@ pub struct Settings {
     pub removed: Vec<String>,
     /// Kézzel hozzáadott, nem támogatott eszközök (csak csatlakozás).
     pub custom: Vec<CustomDevice>,
+    /// Eszköztípus felülírása (eszköz id, típus): "keyboard", "mouse", "headset", "controller", "other".
+    pub kinds: Vec<(String, String)>,
     /// Lemerülés figyelmeztetés a küszöbnél (és 5%-nál).
     pub notify_low: bool,
     /// A lemerülés figyelmeztetés küszöbe (%), 5-30.
@@ -81,6 +83,7 @@ impl Default for Settings {
             hidden: Vec::new(),
             removed: Vec::new(),
             custom: Vec::new(),
+            kinds: Vec::new(),
             notify_low: true,
             low_threshold: 15,
             notify_full: true,
@@ -128,6 +131,11 @@ fn path() -> Option<PathBuf> {
 }
 
 impl Settings {
+    /// A felhasználó által beállított eszköztípus, ha van.
+    pub fn kind_override(&self, id: &str) -> Option<&str> {
+        self.kinds.iter().find(|(i, _)| i == id).map(|(_, k)| k.as_str())
+    }
+
     pub fn load() -> Settings {
         let mut s = Settings::default();
         let Some(text) = path().and_then(|p| std::fs::read_to_string(p).ok()) else { return s };
@@ -153,6 +161,9 @@ impl Settings {
                 "hidden" => s.hidden = parse_list(value),
                 "removed" => s.removed = parse_list(value),
                 "custom" => s.custom = parse_list(value).iter().filter_map(|v| CustomDevice::decode(v)).collect(),
+                "kinds" => {
+                    s.kinds = parse_list(value).iter().filter_map(|v| v.split_once('=').map(|(a, b)| (a.to_string(), b.to_string()))).collect()
+                }
                 _ => {}
             }
         }
@@ -168,13 +179,14 @@ impl Settings {
         let hidden = list(self.hidden.clone());
         let removed = list(self.removed.clone());
         let custom_devices = list(self.custom.iter().map(CustomDevice::encode).collect());
+        let kinds = list(self.kinds.iter().map(|(id, k)| format!("{id}={k}")).collect());
         let q = |s: &str| format!("\"{}\"", s.replace('"', ""));
         let accent = self.custom_accent.map_or("\"\"".to_string(), |c| format!("\"#{c:06X}\""));
         let text = format!(
             "# NapCat beállítások\n\
              notify_low = {}\nlow_threshold = {}\nnotify_full = {}\nquiet_fullscreen = {}\n\
              tray_mode = {}\nicon_style = {}\ntheme = {}\nuse_accent = {}\ncustom_accent = {}\nring_accent = {}\n\
-             poll_secs = {}\nupdate_mode = {}\npin_tip_shown = {}\nflyout_grid = {}\nhidden = [{}]\nremoved = [{}]\ncustom = [{}]\n",
+             poll_secs = {}\nupdate_mode = {}\npin_tip_shown = {}\nflyout_grid = {}\nhidden = [{}]\nremoved = [{}]\ncustom = [{}]\nkinds = [{}]\n",
             self.notify_low,
             self.low_threshold,
             self.notify_full,
@@ -191,7 +203,8 @@ impl Settings {
             self.flyout_grid,
             hidden,
             removed,
-            custom_devices
+            custom_devices,
+            kinds
         );
         let _ = std::fs::write(path, text);
     }

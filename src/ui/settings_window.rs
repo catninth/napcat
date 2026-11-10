@@ -73,6 +73,18 @@ enum Act {
     Add(usize),
     /// Új Bluetooth eszköz párosítása a Windowsban.
     PairBluetooth,
+    /// Eszköztípus váltása (körbejár, végül vissza automatikusra).
+    Kind(String),
+}
+
+fn kind_label(k: DeviceKind) -> &'static str {
+    match k {
+        DeviceKind::Keyboard => "Billentyűzet",
+        DeviceKind::Mouse => "Egér",
+        DeviceKind::Headset => "Fejhallgató",
+        DeviceKind::Controller => "Kontroller",
+        DeviceKind::Other => "Egyéb",
+    }
 }
 
 /// Az ablak oldalai.
@@ -289,6 +301,18 @@ unsafe fn on_act(w: &mut Window, act: Act) {
             s.hidden.retain(|h| *h != id);
         }
         Act::Restore(id) => s.removed.retain(|r| *r != id),
+        Act::Kind(id) => {
+            // Körbejár: automatikus -> billentyűzet -> egér -> fejhallgató -> kontroller -> egyéb -> automatikus.
+            const ORDER: [&str; 5] = ["keyboard", "mouse", "headset", "controller", "other"];
+            let next = match s.kind_override(&id) {
+                None => Some(ORDER[0]),
+                Some(k) => ORDER.iter().position(|o| *o == k).and_then(|i| ORDER.get(i + 1)).copied(),
+            };
+            s.kinds.retain(|(i, _)| *i != id);
+            if let Some(k) = next {
+                s.kinds.push((id, k.to_string()));
+            }
+        }
         Act::Add(i) => {
             let Some(c) = w.candidates.get(i).cloned() else { return };
             let custom = CustomDevice { vid: c.vid, pid: c.pid, product: c.product.clone(), kind: custom::kind_to_str(c.kind).into() };
@@ -464,6 +488,13 @@ impl Ui<'_> {
             };
             let cy = self.device_row(&mut y, d, sub)?;
             self.button(right, cy, "Eltávolítás", false, Act::Remove(d.id.clone()))?;
+            // Típus (glyph): automatikus, vagy a felhasználó választása; kattintásra körbejár.
+            let remove_w = self.p.text_width("Eltávolítás", 12.5, DWRITE_FONT_WEIGHT_MEDIUM)? + 28.0;
+            let label = match s.kind_override(&d.id) {
+                Some(k) => kind_label(custom::kind_from_str(k)).to_string(),
+                None => format!("{} (auto)", kind_label(d.kind)),
+            };
+            self.button(right - remove_w - 8.0, cy, &label, false, Act::Kind(d.id.clone()))?;
         }
         y += SECTION_GAP - ROW_GAP;
 
