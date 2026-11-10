@@ -121,6 +121,8 @@ struct Window {
     hits: Vec<(D2D_RECT_F, Act)>,
     /// A küszöb csúszka húzása közben a csúszka sávja (tartalom koordinátákban).
     dragging: Option<D2D_RECT_F>,
+    /// A csúszka gombjának helye húzás közben (0..1, a kurzor alatt, lépésre igazítás nélkül).
+    slider: Option<f32>,
     /// Az átrendezéshez húzott eszköz, a kurzor y-ja és a megfogás helye a soron belül.
     drag_device: Option<(String, f32, f32)>,
     /// A tálca eszközlistája az utolsó rajzolásból: felső y és az eszközök sorrendben.
@@ -213,6 +215,7 @@ unsafe fn create(owner: HWND, devices: Vec<DeviceState>, page: Page) -> Result<(
         content_h: 1180.0,
         hits: Vec::new(),
         dragging: None,
+        slider: None,
         drag_device: None,
         list: (0.0, Vec::new()),
         anims: Anims::default(),
@@ -381,14 +384,16 @@ unsafe fn drop_device(w: &mut Window, id: &str, top: f32) {
     changed(w);
 }
 
-/// Csúszka érték a vízszintes pozícióból (5-30%, 5-ös lépés).
+/// Csúszka érték a vízszintes pozícióból (5-30%, 5-ös lépés); a gomb a kurzort követi.
 unsafe fn drag_threshold(w: &mut Window, x: f32, track: D2D_RECT_F) {
     let t = ((x - track.left) / (track.right - track.left)).clamp(0.0, 1.0);
+    w.slider = Some(t);
     let value = (5.0 + (t * 5.0).round() * 5.0) as u8;
     if w.settings.low_threshold != value {
         w.settings.low_threshold = value;
         changed(w);
     }
+    let _ = InvalidateRect(w.hwnd, None, false);
 }
 
 fn device_conn(d: &DeviceState) -> &'static str {
@@ -415,6 +420,8 @@ struct Ui<'a> {
     anims: Anims,
     /// A kurzor helye tartalom koordinátákban.
     hover: Option<(f32, f32)>,
+    /// A csúszka gombja húzás közben (0..1).
+    slider: Option<f32>,
 }
 
 impl Ui<'_> {
@@ -763,7 +770,7 @@ impl Ui<'_> {
 
         // Értesítések
         self.section(&mut y, "Értesítések")?;
-        self.p.fill(rect(MARGIN, y, W - 2.0 * MARGIN, 96.0), 8.0, self.theme.row())?;
+        self.p.fill(rect(MARGIN, y, W - 2.0 * MARGIN, 116.0), 8.0, self.theme.row())?;
         self.p.text("Lemerülés figyelmeztetés", 13.5, DWRITE_FONT_WEIGHT_NORMAL, rect(MARGIN + 16.0, y + 9.0, 420.0, 20.0), fg, DWRITE_TEXT_ALIGNMENT_LEADING)?;
         let msg = format!("Szól, ha egy eszköz {}% alá esik", s.low_threshold);
         self.p.text(&msg, 12.0, DWRITE_FONT_WEIGHT_NORMAL, rect(MARGIN + 16.0, y + 29.0, 420.0, 18.0), sub, DWRITE_TEXT_ALIGNMENT_LEADING)?;
@@ -772,15 +779,34 @@ impl Ui<'_> {
         let sy = y + 74.0;
         self.p.text("Küszöb", 12.0, DWRITE_FONT_WEIGHT_NORMAL, rect(MARGIN + 16.0, sy - 10.0, 60.0, 20.0), sub, DWRITE_TEXT_ALIGNMENT_LEADING)?;
         let track = rect(MARGIN + 90.0, sy - 2.0, W - 2.0 * MARGIN - 90.0 - 70.0, 4.0);
-        let t = self.anims.get("threshold", (s.low_threshold as f32 - 5.0) / 25.0, 120);
+        // Húzás közben a gomb pontosan a kurzort követi; elengedéskor a legközelebbi 5%-os
+        // lépésre ugrik (animálva). A lépések pontként és felirattal látszanak.
+        let snapped = (s.low_threshold as f32 - 5.0) / 25.0;
+        let t = match self.slider {
+            Some(raw) => {
+                self.anims.set("threshold", raw);
+                raw
+            }
+            None => self.anims.get("threshold", snapped, 180),
+        };
         let tx = track.left + t * (track.right - track.left);
         self.p.fill(track, 2.0, self.theme.control_border())?;
         self.p.fill(rect(track.left, track.top, tx - track.left, 4.0), 2.0, self.accent)?;
-        self.p.circle(tx, sy, 9.0, self.accent)?;
+        for i in 0..=5 {
+            let k = i as f32 / 5.0;
+            let x = track.left + k * (track.right - track.left);
+            let passed = k <= t + 0.001;
+            self.p.circle(x, sy, 3.5, if passed { self.accent } else { self.theme.sub() })?;
+            let current = (k - snapped).abs() < 0.01;
+            let (weight, color) = if current { (DWRITE_FONT_WEIGHT_SEMI_BOLD, fg) } else { (DWRITE_FONT_WEIGHT_NORMAL, sub) };
+            self.p.text(&format!("{}%", 5 + i * 5), 11.0, weight, rect(x - 20.0, sy + 11.0, 40.0, 16.0), color, DWRITE_TEXT_ALIGNMENT_CENTER)?;
+        }
+        let grow = self.anims.get("threshold-grab", self.slider.is_some() as u8 as f32, 120);
+        self.p.circle(tx, sy, 9.0 + 2.0 * grow, self.accent)?;
         self.p.circle(tx, sy, 4.0, self.theme.on_accent())?;
         self.p.text(&format!("{}%", s.low_threshold), 13.0, DWRITE_FONT_WEIGHT_SEMI_BOLD, rect(right - 56.0, sy - 10.0, 40.0, 20.0), fg, DWRITE_TEXT_ALIGNMENT_TRAILING)?;
-        self.hits.push((rect(track.left - 10.0, sy - 14.0, track.right - track.left + 20.0, 28.0), Act::Threshold));
-        y += 96.0 + ROW_GAP;
+        self.hits.push((rect(track.left - 10.0, sy - 14.0, track.right - track.left + 20.0, 44.0), Act::Threshold));
+        y += 116.0 + ROW_GAP;
         let cy = self.row(&mut y, "Teli töltés értesítés", None)?;
         self.switch(right, cy, s.notify_full, Act::NotifyFull)?;
         let cy = self.row(&mut y, "Csendes mód teljes képernyőn", Some("Játék vagy film közben az értesítések várnak"))?;
@@ -835,6 +861,7 @@ unsafe fn paint(w: &mut Window) -> Result<()> {
         list: (0.0, Vec::new()),
         anims,
         hover: w.hover.map(|(x, y)| (x, y + w.scroll)),
+        slider: w.slider,
     };
     ui.reset();
     let result = match w.page {
@@ -969,6 +996,9 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 WINDOW.with_borrow_mut(|w| {
                     let Some(w) = w else { return };
                     if w.dragging.take().is_some() {
+                        // Elengedés: a gomb a legközelebbi lépésre úszik.
+                        w.slider = None;
+                        let _ = InvalidateRect(hwnd, None, false);
                         let _ = ReleaseCapture();
                         return;
                     }
