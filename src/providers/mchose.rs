@@ -36,6 +36,8 @@ struct Info {
     level: u8,
     wired: bool,
     charge: ChargeState,
+    /// Az egér saját PID-je (vevőn keresztül is az egéré, nem a vevőé).
+    pid: u16,
 }
 
 /// A kérés: a report ID utáni bájtok invertálva, a kollekció feature hosszára kiegészítve.
@@ -65,7 +67,7 @@ fn parse_info(r: &[u8]) -> Option<Info> {
     } else {
         ChargeState::Discharging
     };
-    Some(Info { level, wired, charge })
+    Some(Info { level, wired, charge, pid })
 }
 
 /// Az "e5 06" input report: kész a válasz.
@@ -123,10 +125,23 @@ fn device_id(name: &str) -> String {
     format!("mchose-{}", slug.trim_matches('-'))
 }
 
+/// Az egér neve a saját PID-je alapján (a vevő termékneve általános, pl. "MCHOSE 8K Receiver").
+fn model_name(pid: u16) -> Option<&'static str> {
+    Some(match pid {
+        0x4018 => "MCHOSE A7 V2 Pro",
+        0x4023 => "MCHOSE A7 V2 Pro+",
+        0x4019 => "MCHOSE A7 V2 Ultra",
+        0x4021 => "MCHOSE A7 V2 Ultra+",
+        _ => return None,
+    })
+}
+
 #[derive(Default)]
 pub struct Mchose {
     /// Eszközönként: név és az utolsó ismert állapot (alvás közben ez marad).
     seen: HashMap<String, (String, Option<Info>)>,
+    /// Vevő (VID, PID) -> a rajta legutóbb válaszoló egér PID-je; alvás közben is ehhez kötjük.
+    links: HashMap<(u16, u16), u16>,
     connected: usize,
     any_unknown: bool,
 }
@@ -134,27 +149,59 @@ pub struct Mchose {
 impl Provider for Mchose {
     fn scan(&mut self) -> Vec<DeviceState> {
         let mut out: Vec<DeviceState> = Vec::new();
-        // Eszközönként a megfelelő kollekciók; több is lehet, az első válaszoló számít.
-        let mut groups: Vec<(String, String, Vec<HidInterface>)> = Vec::new();
+        // HID eszközönként (vevő vagy kábeles egér) a megfelelő kollekciók; az első válaszoló számít.
+        let mut groups: Vec<((u16, u16), String, Vec<HidInterface>)> = Vec::new();
         for i in hid::interfaces() {
             if !SUPPORTED.contains(&(i.vid, i.pid)) || !matches!(i.usage_page, 0xFF01 | 0xFF0B) || (i.feature_len as usize) < REPORT_LEN {
                 continue;
             }
-            let name = device_name(&i.product);
-            let id = device_id(&name);
-            match groups.iter_mut().find(|g| g.0 == id) {
+            match groups.iter_mut().find(|g| g.0 == (i.vid, i.pid)) {
                 Some(g) => g.2.push(i),
-                None => groups.push((id, name, vec![i])),
+                None => groups.push(((i.vid, i.pid), i.product.clone(), vec![i])),
             }
         }
-        for (id, name, mut interfaces) in groups {
+        // Egerenként (a vevőn és a kábelen át is ugyanaz): név, friss adat, VID/PID; a kábel nyer.
+        let mut mice: Vec<(String, String, Option<Info>, (u16, u16))> = Vec::new();
+        for (hw, product, mut interfaces) in groups {
             // A 0xFF01 válaszol (A7 V2 Ultra+ 8K vevőn ellenőrizve), a 0xFF0B elutasítja a kérést.
             interfaces.sort_by_key(|i| i.usage_page != 0xFF01);
-            let entry = self.seen.entry(id.clone()).or_insert_with(|| (name, None));
-            if let Some(fresh) = interfaces.iter().find_map(read) {
-                entry.1 = Some(fresh);
+            let fresh = interfaces.iter().find_map(read);
+            let cable = model_name(hw.1).is_some();
+            let mouse = if cable {
+                Some(hw.1)
+            } else {
+                let answered = fresh.as_ref().map(|f| f.pid).filter(|p| model_name(*p).is_some());
+                if let Some(p) = answered {
+                    // Mostantól ismert, melyik egér van a vevőn: az általános bejegyzés megy.
+                    self.links.insert(hw, p);
+                    self.seen.remove(&device_id(&device_name(&product)));
+                }
+                self.links.get(&hw).copied()
+            };
+            let name = mouse.and_then(model_name).map(String::from).unwrap_or_else(|| device_name(&product));
+            let id = device_id(&name);
+            match mice.iter_mut().find(|m| m.0 == id) {
+                Some(m) => {
+                    if fresh.is_some() && (m.2.is_none() || cable) {
+                        (m.2, m.3) = (fresh, hw);
+                    }
+                }
+                None => mice.push((id, name, fresh, hw)),
             }
-            let i = &interfaces[0];
+        }
+        for (id, name, fresh, hw) in mice {
+            let entry = self.seen.entry(id.clone()).or_insert_with(|| (name, None));
+            match fresh {
+                Some(f) => entry.1 = Some(f),
+                // Kihúzott kábel után, amíg a vevőn alvó egér nem válaszol: a szint marad, a töltés nem.
+                None if entry.1.as_ref().is_some_and(|f| f.wired) && model_name(hw.1).is_none() => {
+                    if let Some(f) = entry.1.as_mut() {
+                        f.wired = false;
+                        f.charge = ChargeState::Discharging;
+                    }
+                }
+                None => {}
+            }
             let (level, charge) = match &entry.1 {
                 Some(f) => (Some(f.level), f.charge),
                 None => (None, ChargeState::Unknown),
@@ -163,7 +210,7 @@ impl Provider for Mchose {
                 level,
                 charge,
                 connected: true,
-                hw: Some((i.vid, i.pid)),
+                hw: Some(hw),
                 ..DeviceState::disconnected(&id, &entry.0, DeviceKind::Mouse)
             });
         }
@@ -201,7 +248,7 @@ mod tests {
         let ack = [0x13, 0x1A, 0xF9, 0xFF, 0xFF];
         assert!(is_ready(&ack));
         let resp = [0x11, 0xF9, 0xC8, 0xC7, 0xDE, 0xBF, 0xFA, 0xD1, 0xFD, 0xFB, 0xF6, 0x9B, 0xFF, 0x9B, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
-        assert_eq!(parse_info(&resp), Some(Info { level: 100, wired: false, charge: ChargeState::Discharging }));
+        assert_eq!(parse_info(&resp), Some(Info { level: 100, wired: false, charge: ChargeState::Discharging, pid: 0x4021 }));
     }
 
     #[test]
@@ -214,13 +261,13 @@ mod tests {
 
         // Vevőn: vid 3837, pid 100B, 72%, nem tölt.
         let wireless = response(&[0x37, 0x38, 0x0B, 0x10, 1, 2, 3, 4, 0b0000_1001, 72, 0]);
-        assert_eq!(parse_info(&wireless), Some(Info { level: 72, wired: false, charge: ChargeState::Discharging }));
+        assert_eq!(parse_info(&wireless), Some(Info { level: 72, wired: false, charge: ChargeState::Discharging, pid: 0x100B }));
         // Dokkon tölt.
         let docked = response(&[0x37, 0x38, 0x0B, 0x10, 0, 0, 0, 0, 0b0000_1001, 80, 1]);
         assert_eq!(parse_info(&docked).map(|i| i.charge), Some(ChargeState::Charging));
         // Kábelen, tele.
         let wired = response(&[0x37, 0x38, 0x21, 0x40, 0, 0, 0, 0, 0b0000_1000, 100, 0]);
-        assert_eq!(parse_info(&wired), Some(Info { level: 100, wired: true, charge: ChargeState::Full }));
+        assert_eq!(parse_info(&wired), Some(Info { level: 100, wired: true, charge: ChargeState::Full, pid: 0x4021 }));
         // Alvó egér, és más parancs válasza.
         assert_eq!(parse_info(&response(&[0x37, 0x38, 0x0B, 0x10, 0, 0, 0, 0, 1, 0, 0])), None);
         let mut other = wireless.clone();

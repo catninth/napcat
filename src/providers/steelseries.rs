@@ -316,6 +316,8 @@ fn read(i: &HidInterface, proto: Proto) -> Option<Reading> {
     let dev = Device::open(&i.path)?;
     let (req, expect) = proto.request();
     let r = transact(&dev, i, req, expect)?;
+    let hex: Vec<String> = r.iter().take(24).map(|b| format!("{b:02X}")).collect();
+    crate::worker::log(&format!("steelseries {:04X} válasz: {}", i.pid, hex.join(" ")));
     if proto == Proto::ProWireless && parse(proto, &r).is_none() {
         // Második lépés: a szint 0-4 fokozatban; töltési állapotot ez az eszköz nem ad.
         let r = transact(&dev, i, &[0x40, 0xAA], &[])?;
