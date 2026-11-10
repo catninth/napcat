@@ -25,6 +25,39 @@ no WebView, no UI framework, and practically zero CPU when idle.
 | Bluetooth battery (Windows battery property) | done, untested on hardware |
 | Headsets (other than Logitech), Razer, BLE GATT | planned |
 
+## Screenshots
+
+<p align="center">
+  <a href="docs/gallery/flyout/list-dark.png">
+    <img src="docs/gallery/flyout/list-dark.png" alt="NapCat flyout panel with device levels, charging state, time estimates and a low-battery alert" width="49%">
+  </a>
+  <a href="docs/gallery/flyout/grid-light.png">
+    <img src="docs/gallery/flyout/grid-light.png" alt="NapCat flyout panel in grid view, light theme" width="49%">
+  </a>
+</p>
+
+<p align="center">
+  <a href="docs/gallery/tray/icon-styles.png">
+    <img src="docs/gallery/tray/icon-styles.png" alt="NapCat tray icon styles: ring, percent, badge and bar on dark and light taskbars" width="100%">
+  </a>
+</p>
+
+<p align="center">
+  <a href="docs/gallery/settings/devices-dark.png">
+    <img src="docs/gallery/settings/devices-dark.png" alt="NapCat devices page for removing, retyping and adding devices" width="49%">
+  </a>
+  <a href="docs/gallery/notifications/low-battery.png">
+    <img src="docs/gallery/notifications/low-battery.png" alt="NapCat low-battery notification with snooze" width="49%">
+  </a>
+</p>
+
+<p align="center">
+  <a href="docs/gallery/README.md"><strong>Browse the full feature gallery →</strong></a>
+</p>
+
+Screenshots show the Hungarian UI with simulated devices. See the gallery for all 14 images and
+capture details.
+
 ## Building
 
 Requires the Rust MSVC toolchain and, for the installer, [Inno Setup 6](https://jrsoftware.org/isdl.php).

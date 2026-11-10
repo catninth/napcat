@@ -109,24 +109,36 @@ unsafe fn paint(t: &Tip) -> Result<()> {
     let hwnd_props = D2D1_HWND_RENDER_TARGET_PROPERTIES { hwnd: t.hwnd, pixelSize: size, presentOptions: D2D1_PRESENT_OPTIONS_NONE };
     let rt = t.renderer.d2d().CreateHwndRenderTarget(&props, &hwnd_props)?;
     let ctx: ID2D1DeviceContext = rt.cast()?;
-    let theme = Theme::ui();
-    let p = Painter { ctx: &ctx, renderer: &t.renderer };
     ctx.BeginDraw();
+    draw(&ctx, &t.renderer, &t.devices, Theme::ui())?;
+    ctx.EndDraw(None, None)?;
+    Ok(())
+}
+
+/// A tooltip mérete DIP-ben (a képernyőképekhez).
+#[cfg(test)]
+pub fn size(n: usize) -> (f32, f32) {
+    (W, height(n))
+}
+
+/// A tooltip tartalma DIP-ben; az ablak és a képernyőképek is ezt rajzolják.
+pub unsafe fn draw(ctx: &ID2D1DeviceContext, renderer: &IconRenderer, devices: &[DeviceState], theme: Theme) -> Result<()> {
+    let p = Painter { ctx, renderer };
     // A design tooltip háttere: a panelnél egy árnyalattal világosabb.
     ctx.Clear(Some(&if theme.light { super::theme::rgb(0xFFFFFF, 1.0) } else { super::theme::rgb(0x26272C, 1.0) }));
     let mut y = PAD_Y;
-    if t.devices.is_empty() {
+    if devices.is_empty() {
         p.text("Nincs eszköz", 12.5, DWRITE_FONT_WEIGHT_NORMAL, rect(PAD_X, y, W - 2.0 * PAD_X, ROW), theme.sub(), DWRITE_TEXT_ALIGNMENT_LEADING)?;
     }
-    for d in &t.devices {
+    for d in devices {
         // Kis gyűrű: halvány háttérkör, rajta a szint íve (leválasztva szaggatott, ív nélkül).
         let (c, r, sw) = (ROW / 2.0, ROW * 20.0 / 48.0, ROW * 8.0 / 48.0);
         let track = D2D1_ELLIPSE { point: D2D_POINT_2F { x: PAD_X + c, y: y + c }, radiusX: r, radiusY: r };
-        let style = if d.connected { None } else { Some(t.renderer.stroke_style(&[0.5, 0.6])?) };
+        let style = if d.connected { None } else { Some(renderer.stroke_style(&[0.5, 0.6])?) };
         ctx.DrawEllipse(&track, &p.brush(&theme.track())?, sw, style.as_ref());
         if let (true, Some(level)) = (d.connected, d.level) {
             ctx.SetTransform(&windows::Foundation::Numerics::Matrix3x2::translation(PAD_X, y));
-            t.renderer.arc(&ctx, c, r, sw, level as f32 / 100.0, &p.brush(&theme.ring(d))?)?;
+            renderer.arc(ctx, c, r, sw, level as f32 / 100.0, &p.brush(&theme.ring(d))?)?;
             ctx.SetTransform(&windows::Foundation::Numerics::Matrix3x2::identity());
         }
         let name_color = if d.connected { theme.fg(1.0) } else { theme.sub() };
@@ -139,7 +151,6 @@ unsafe fn paint(t: &Tip) -> Result<()> {
         p.text(&pct, 12.5, DWRITE_FONT_WEIGHT_SEMI_BOLD, rect(W - PAD_X - 48.0, y, 48.0, ROW), color, DWRITE_TEXT_ALIGNMENT_TRAILING)?;
         y += ROW + GAP;
     }
-    ctx.EndDraw(None, None)?;
     Ok(())
 }
 

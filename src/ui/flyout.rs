@@ -378,6 +378,17 @@ unsafe fn draw_content(
     Ok(hits)
 }
 
+/// A panel mérete DIP-ben és rajzolása a képernyőképekhez (ugyanaz a kód, mint az ablaké).
+#[cfg(test)]
+pub fn gallery_size(devices: &[DeviceState], grid: bool) -> (f32, f32) {
+    (W, content_height(devices, grid))
+}
+
+#[cfg(test)]
+pub unsafe fn gallery_draw(ctx: &ID2D1DeviceContext, renderer: &IconRenderer, devices: &[DeviceState], grid: bool, updated: Option<u64>, theme: Theme) -> Result<()> {
+    draw_content(ctx, renderer, devices, grid, updated, None, theme).map(|_| ())
+}
+
 /// A kurzor alatti kattintható elem (lParam: kliens koordináták pixelben).
 fn hit_at(lparam: LPARAM) -> Option<Hit> {
     let (x, y) = ((lparam.0 & 0xFFFF) as i16 as f32, ((lparam.0 >> 16) & 0xFFFF) as i16 as f32);
