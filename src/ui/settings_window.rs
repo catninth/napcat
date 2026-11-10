@@ -143,6 +143,9 @@ struct Window {
     /// A kurzor alatti kattintható elem indexe (változáskor újrarajzolás).
     hover_hit: Option<usize>,
     tracking: bool,
+    /// Görgetősáv: a kurzor fölötte van-e, és húzás közben a kezdő kurzor y (kliens DIP) és görgetés.
+    sb_hover: bool,
+    sb_drag: Option<(f32, f32)>,
     /// A címsor és a tálcagomb ikonjának állapota (változáskor újrarajzolva); None: még nincs.
     icon_style: Option<AppIcon>,
 }
@@ -239,6 +242,8 @@ unsafe fn create(owner: HWND, devices: Vec<DeviceState>, page: Page) -> Result<(
         anims: Anims::default(),
         hover: None,
         hover_hit: None,
+        sb_hover: false,
+        sb_drag: None,
         tracking: false,
         icon_style: None,
     }));
@@ -956,10 +961,23 @@ unsafe fn paint(w: &mut Window) -> Result<()> {
     w.anims = std::mem::take(&mut ui.anims);
     if let Ok(h) = result {
         w.content_h = h;
+        // Átméretezés vagy rövidebb oldal után a görgetés ne lógjon túl a tartalmon.
+        w.scroll = w.scroll.clamp(0.0, max_scroll(w));
     }
     ctx.SetTransform(&Matrix3x2::identity());
     if page < 1.0 {
         let _ = ui.p.fill(rect(0.0, 0.0, W, client_h(w)), 0.0, fade(theme.window(), 1.0 - page));
+    }
+    // Görgetősáv (Windows 11 stílus): vékony csík, rámutatáskor és húzás közben szélesebb, sávval.
+    if let Some((track, thumb)) = scrollbar(w) {
+        let wide = w.anims.get("sb", (w.sb_hover || w.sb_drag.is_some()) as u8 as f32, 120);
+        let width = 3.0 + 3.0 * wide;
+        let x = track.right - 3.0 - width;
+        if wide > 0.0 {
+            let _ = ui.p.fill(rect(track.left, track.top, track.right - track.left, track.bottom - track.top), 6.0, theme.fg(0.06 * wide));
+        }
+        let alpha = if w.sb_drag.is_some() { 0.6 } else { 0.35 + 0.15 * wide };
+        let _ = ui.p.fill(rect(x, thumb.top, width, thumb.bottom - thumb.top), width / 2.0, theme.fg(alpha));
     }
     // Amíg valami mozog, a következő képkocka; utána az időzítő leáll.
     if w.anims.active() {
@@ -1020,6 +1038,39 @@ fn client_h(w: &Window) -> f32 {
     (rc.bottom - rc.top) as f32 * 96.0 / w.dpi
 }
 
+fn client_w(w: &Window) -> f32 {
+    let mut rc = RECT::default();
+    unsafe {
+        let _ = GetClientRect(w.hwnd, &mut rc);
+    }
+    (rc.right - rc.left) as f32 * 96.0 / w.dpi
+}
+
+fn max_scroll(w: &Window) -> f32 {
+    (w.content_h - client_h(w)).max(0.0)
+}
+
+/// A görgetősáv kattintható sávja és a fogantyú (kliens DIP); None, ha a tartalom kifér.
+fn scrollbar(w: &Window) -> Option<(D2D_RECT_F, D2D_RECT_F)> {
+    let (cw, ch) = (client_w(w), client_h(w));
+    let max = max_scroll(w);
+    if max < 1.0 {
+        return None;
+    }
+    let track = rect(cw - 14.0, 4.0, 12.0, ch - 8.0);
+    let track_h = track.bottom - track.top;
+    let thumb_h = (track_h * ch / w.content_h).clamp(32.0, track_h);
+    let top = track.top + (w.scroll / max).clamp(0.0, 1.0) * (track_h - thumb_h);
+    Some((track, rect(track.left, top, 12.0, thumb_h)))
+}
+
+/// Kurzorpozíció (lParam) kliens DIP-ben, görgetés nélkül.
+fn to_client(w: &Window, lparam: LPARAM) -> (f32, f32) {
+    let (x, y) = ((lparam.0 & 0xFFFF) as i16 as f32, ((lparam.0 >> 16) & 0xFFFF) as i16 as f32);
+    let k = 96.0 / w.dpi;
+    (x * k, y * k)
+}
+
 /// Kurzorpozíció (lParam, kliens pixel) tartalom koordinátákban.
 fn to_content(w: &Window, lparam: LPARAM) -> (f32, f32) {
     let (x, y) = ((lparam.0 & 0xFFFF) as i16 as f32, ((lparam.0 >> 16) & 0xFFFF) as i16 as f32);
@@ -1050,7 +1101,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 let delta = ((wparam.0 >> 16) & 0xFFFF) as i16 as f32 / 120.0;
                 WINDOW.with_borrow_mut(|w| {
                     if let Some(w) = w {
-                        let max = (w.content_h - client_h(w)).max(0.0);
+                        let max = max_scroll(w);
                         w.scroll = (w.scroll - delta * 64.0).clamp(0.0, max);
                         let _ = InvalidateRect(hwnd, None, false);
                     }
@@ -1060,6 +1111,22 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             WM_LBUTTONDOWN => {
                 WINDOW.with_borrow_mut(|w| {
                     let Some(w) = w else { return };
+                    // Görgetősáv: a fogantyú húzható, a sáv többi része laponként lapoz.
+                    let (cx, cy) = to_client(w, lparam);
+                    if let Some((track, thumb)) = scrollbar(w) {
+                        if contains(&track, cx, cy) {
+                            if cy >= thumb.top && cy <= thumb.bottom {
+                                w.sb_drag = Some((cy, w.scroll));
+                                SetCapture(hwnd);
+                            } else {
+                                let page = client_h(w) * 0.9;
+                                let step = if cy < thumb.top { -page } else { page };
+                                w.scroll = (w.scroll + step).clamp(0.0, max_scroll(w));
+                            }
+                            let _ = InvalidateRect(hwnd, None, false);
+                            return;
+                        }
+                    }
                     let (x, y) = to_content(w, lparam);
                     match w.hits.iter().find(|(r, _)| contains(r, x, y)).cloned() {
                         Some((r, Act::Threshold)) => {
@@ -1085,6 +1152,29 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                     if !w.tracking {
                         let mut tme = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: hwnd, dwHoverTime: 0 };
                         w.tracking = TrackMouseEvent(&mut tme).is_ok();
+                    }
+                    let (cx, cy) = to_client(w, lparam);
+                    if let Some((y0, scroll0)) = w.sb_drag {
+                        // A fogantyú a kurzorral mozog; a tartalom arányosan görget.
+                        if let Some((track, thumb)) = scrollbar(w) {
+                            let room = (track.bottom - track.top) - (thumb.bottom - thumb.top);
+                            if room > 0.0 {
+                                w.scroll = (scroll0 + (cy - y0) * max_scroll(w) / room).clamp(0.0, max_scroll(w));
+                            }
+                        }
+                        SetCursor(LoadCursorW(None, IDC_ARROW).unwrap_or_default());
+                        let _ = InvalidateRect(hwnd, None, false);
+                        return;
+                    }
+                    let on_bar = scrollbar(w).is_some_and(|(track, _)| contains(&track, cx, cy));
+                    if on_bar != w.sb_hover {
+                        w.sb_hover = on_bar;
+                        let _ = InvalidateRect(hwnd, None, false);
+                    }
+                    if on_bar {
+                        w.hover = None;
+                        SetCursor(LoadCursorW(None, IDC_ARROW).unwrap_or_default());
+                        return;
                     }
                     w.hover = Some((x, y - w.scroll));
                     let hit = w.hits.iter().position(|(r, _)| contains(r, x, y));
@@ -1114,6 +1204,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             WM_LBUTTONUP => {
                 WINDOW.with_borrow_mut(|w| {
                     let Some(w) = w else { return };
+                    if w.sb_drag.take().is_some() {
+                        let _ = ReleaseCapture();
+                        let _ = InvalidateRect(hwnd, None, false);
+                        return;
+                    }
                     if w.dragging.take().is_some() {
                         // Elengedés: a gomb a legközelebbi lépésre úszik.
                         w.slider = None;
@@ -1137,6 +1232,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 WINDOW.with_borrow_mut(|w| {
                     if let Some(w) = w {
                         w.tracking = false;
+                        w.sb_hover = false;
                         w.hover = None;
                         w.hover_hit = None;
                         let _ = InvalidateRect(hwnd, None, false);
