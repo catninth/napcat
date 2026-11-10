@@ -57,6 +57,12 @@ Name: "{userprograms}\NapCat"; Filename: "{app}\napcat.exe"
 [Registry]
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "NapCat"; \
   ValueData: """{app}\napcat.exe"""; Flags: uninsdeletevalue; Tasks: autostart
+; Az értesítések neve és ikonja (az app indításkor írja); eltávolításkor törlődik.
+Root: HKCU; Subkey: "Software\Classes\AppUserModelId\catninth.NapCat"; Flags: uninsdeletekey dontcreatekey
+
+[UninstallDelete]
+Type: files; Name: "{localappdata}\NapCat\toast.png"
+Type: dirifempty; Name: "{localappdata}\NapCat"
 
 [Run]
 ; Kézi telepítésnél a befejező oldalon, csendes frissítésnél (/VERYSILENT) automatikusan indul.

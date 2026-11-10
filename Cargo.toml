@@ -14,6 +14,8 @@ winresource = "0.1"
 [dependencies.windows]
 version = "0.58"
 features = [
+    "Data_Xml_Dom",
+    "Foundation",
     "Foundation_Numerics",
     "Win32_Foundation",
     "Win32_Security",
@@ -47,6 +49,7 @@ features = [
     "Win32_System_IO",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
+    "UI_Notifications",
 ]
 
 [profile.release]

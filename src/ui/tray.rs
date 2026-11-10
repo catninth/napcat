@@ -25,6 +25,7 @@ use std::time::Instant;
 
 use super::estimate::History;
 use super::flyout;
+use super::toast::{self, WM_TOAST};
 use super::tooltip;
 use super::settings_window;
 use super::icon_render::{IconRenderer, Layout};
@@ -115,6 +116,9 @@ unsafe fn user_busy() -> bool {
 
 /// Várakozó értesítések ellenőrzése (csendes módban) ennyi időnként.
 const QUIET_TIMER: usize = 1;
+/// A "Szólj 30 perc múlva" szundik ellenőrzése percenként, amíg van várakozó.
+const SNOOZE_TIMER: usize = 2;
+const SNOOZE: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 
 /// Alap GUID; eszközönként ebből és az eszköz azonosítójából képzünk stabil GUID-ot, hogy a
 /// Windows megjegyezze, melyik ikon van kitűzve. A GUID az exe útvonalához kötődik, ezért ha egy
@@ -331,6 +335,8 @@ struct App {
     pending: Vec<(String, String, String, bool)>,
     /// Eszközönkénti előzmények a becsléshez ("kb. 40 perc", "1 ó 10 p a telig", "2 órája").
     histories: HashMap<String, History>,
+    /// Szundizott lemerülés figyelmeztetések: (eszköz id, mikor szóljon újra).
+    snoozed: Vec<(String, Instant)>,
 }
 
 /// Sürgősség az "egy ikon" módhoz: lemerülő > töltő > legalacsonyabb szint > többi (kisebb = sürgősebb).
@@ -466,6 +472,10 @@ impl App {
             let _ = SetTimer(hwnd, QUIET_TIMER, 30_000, None);
             return;
         }
+        // Toast gombokkal (lemerülésnél szundi); ha nem megy, balloon az eszköz ikonján.
+        if toast::show(hwnd, &title, &text, warning.then_some(id)).is_ok() {
+            return;
+        }
         // Az eszköz ikonja, vagy ha az nem látszik (rejtett, "egy ikon" mód), az első látható ikon.
         let icon = match self.devices.iter().position(|d| d.state.id == id && d.shown) {
             Some(i) => &self.devices[i],
@@ -487,6 +497,28 @@ impl App {
             self.notify_device(hwnd, &id, title, text, warning);
         }
     }
+
+    /// Lejárt szundik: ha az eszköz még mindig lemerülőben van, újra szól.
+    unsafe fn check_snoozed(&mut self, hwnd: HWND) {
+        let now = Instant::now();
+        let (due, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.snoozed).into_iter().partition(|(_, t)| *t <= now);
+        self.snoozed = rest;
+        if self.snoozed.is_empty() {
+            let _ = KillTimer(hwnd, SNOOZE_TIMER);
+        }
+        let threshold = self.settings.low_threshold;
+        for (id, _) in due {
+            let Some(d) = self.devices.iter().map(|d| &d.state).find(|d| d.id == id) else { continue };
+            if let Some(level) = d.level.filter(|&l| d.connected && d.charge == ChargeState::Discharging && l <= threshold) {
+                let (title, text) = low_battery_text(&d.name, level);
+                self.notify_device(hwnd, &id, title, text, true);
+            }
+        }
+    }
+}
+
+fn low_battery_text(name: &str, level: u8) -> (String, String) {
+    (format!("{name} lemerülőben"), format!("{name}: {level}% maradt. Tedd töltőre."))
 }
 
 thread_local! {
@@ -552,7 +584,9 @@ pub unsafe fn run(hinst: HINSTANCE) -> Result<()> {
         last_update: None,
         pending: Vec::new(),
         histories: HashMap::new(),
+        snoozed: Vec::new(),
     }));
+    toast::register();
     with_app(|app| app.apply_settings(hwnd));
     register_power_notifications(hwnd);
 
@@ -635,8 +669,8 @@ unsafe fn on_devices(hwnd: HWND) {
             app.histories.entry(d.state.id.clone()).or_default().record(&d.state, Instant::now());
             if let Some(t) = d.low_battery_crossed(threshold) {
                 if app.settings.notify_low {
-                    let text = format!("{}: {}% maradt. Tedd töltőre.", d.state.name, d.state.level.unwrap_or(t));
-                    notes.push((d.state.id.clone(), format!("{} lemerülőben", d.state.name), text, true));
+                    let (title, text) = low_battery_text(&d.state.name, d.state.level.unwrap_or(t));
+                    notes.push((d.state.id.clone(), title, text, true));
                 }
             }
             if d.full_reached() && app.settings.notify_full {
@@ -677,6 +711,22 @@ fn flyout_data() -> (Vec<DeviceState>, bool, Option<u64>) {
         Some(app) => (app.active_states(), app.settings.flyout_grid, app.last_update.map(|t| t.elapsed().as_secs())),
         None => (Vec::new(), false, None),
     })
+}
+
+/// Toast gomb vagy kattintás: szundi, vagy a panel megnyitása az első látható ikonnál.
+unsafe fn on_toast(hwnd: HWND) {
+    for action in toast::take_actions() {
+        if let Some(id) = action.strip_prefix("snooze:") {
+            with_app(|app| app.snoozed.push((id.to_string(), Instant::now() + SNOOZE)));
+            let _ = SetTimer(hwnd, SNOOZE_TIMER, 60_000, None);
+        } else if action == "open" && !flyout::is_open() {
+            let uid = with_app(|app| app.icons_mut().find(|i| i.shown).map(|i| i.uid));
+            if let Some(rect) = uid.and_then(|uid| icon_rect(hwnd, uid)) {
+                let (devices, grid, updated) = flyout_data();
+                flyout::toggle(hwnd, rect, devices, grid, updated);
+            }
+        }
+    }
 }
 
 /// A kattintott ikon (uID) helye a tálcán, a felugró panel elhelyezéséhez.
@@ -854,6 +904,14 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             }
             WM_TIMER if wparam.0 == QUIET_TIMER => {
                 with_app(|app| app.flush_pending(hwnd));
+                LRESULT(0)
+            }
+            WM_TIMER if wparam.0 == SNOOZE_TIMER => {
+                with_app(|app| app.check_snoozed(hwnd));
+                LRESULT(0)
+            }
+            WM_TOAST => {
+                on_toast(hwnd);
                 LRESULT(0)
             }
             WM_UPDATE_READY => {
