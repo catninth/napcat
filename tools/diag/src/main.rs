@@ -40,6 +40,7 @@ const IS_CONNECTED: DEVPROPKEY = DEVPROPKEY {
 mod compx;
 mod io;
 mod listen;
+mod logitech;
 mod mchose;
 mod via;
 
@@ -51,12 +52,13 @@ fn main() {
         Some("via") => unsafe { via::run() },
         Some("compx") => unsafe { compx::run() },
         Some("mchose") => print!("{}", unsafe { mchose::run() }),
+        Some("logitech") => print!("{}", unsafe { logitech::run() }),
         Some("listen") => {
             let secs = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(15);
             unsafe { listen::run(secs) }
         }
         None => list(),
-        Some(_) => println!("használat: napcat-diag [via | compx | mchose | listen [mp]]"),
+        Some(_) => println!("használat: napcat-diag [via | compx | mchose | logitech | listen [mp]]"),
     }
 }
 
@@ -66,11 +68,21 @@ fn double_clicked() -> bool {
     std::env::args().len() == 1 && unsafe { windows::Win32::System::Console::GetConsoleProcessList(&mut ids) } == 1
 }
 
-/// Dupla kattos mód: MCHOSE lekérdezés, az eredmény az exe melletti napcat-diag.txt-be is
+/// Dupla kattos mód: Logitech és MCHOSE lekérdezés, az eredmény az exe melletti napcat-diag.txt-be is
 /// (ha oda nem írható, az Asztalra), a végén Enterre vár, hogy az ablak ne tűnjön el.
 fn report() {
     println!("NapCat diagnosztika. Mozgasd az egeret, amíg fut (legfeljebb fél perc)...\n");
-    let text = unsafe { mchose::run() };
+    // A jelenlévő gyártók lekérdezése; ha egyik sincs, az MCHOSE rész listázza az összes HID-et.
+    let all = unsafe { all_hid_info() };
+    let logi = all.iter().any(|d| d.vid == 0x046D);
+    let mchose = all.iter().any(|d| d.vid == 0x3837 || d.vid == 0x5253);
+    let mut text = String::new();
+    if logi {
+        text += &unsafe { logitech::run() };
+    }
+    if mchose || !logi {
+        text += &unsafe { mchose::run() };
+    }
     println!("{text}");
     let beside = std::env::current_exe().ok().and_then(|p| Some(p.parent()?.join("napcat-diag.txt")));
     let desktop = std::env::var_os("USERPROFILE").map(|h| std::path::Path::new(&h).join("Desktop").join("napcat-diag.txt"));
