@@ -85,7 +85,7 @@ fn scan_devices() -> Vec<(String, String, DeviceKind, u8)> {
             if out.iter().any(|d| d.0 == id) {
                 continue;
             }
-            let name = string_property(set, &dev, &NAME).unwrap_or_else(|| "Bluetooth eszköz".into());
+            let name = string_property(set, &dev, &NAME).unwrap_or_else(|| crate::i18n::t("Bluetooth eszköz", "Bluetooth device").into());
             let mut cod = [0u8; 4];
             let cod = property(set, &dev, &CLASS_OF_DEVICE, &mut cod).filter(|&n| n == 4).map(|_| u32::from_le_bytes(cod));
             out.push((id, name.clone(), kind_of(cod, &name), level[0].min(100)));

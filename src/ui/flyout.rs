@@ -9,6 +9,8 @@ use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::mem::size_of;
 
+use crate::i18n::t;
+
 use windows::core::{w, Interface, Result};
 use windows::Foundation::Numerics::Matrix3x2;
 use windows::Win32::Foundation::*;
@@ -154,22 +156,23 @@ fn status_text(d: &DeviceState) -> String {
 
 fn status_base(d: &DeviceState) -> &'static str {
     match (d.connected, d.charge, d.level) {
-        (false, _, _) => "Nincs csatlakoztatva",
-        (true, ChargeState::Charging, _) => "Töltés",
-        (true, ChargeState::Full, _) => "Feltöltve",
-        (true, ChargeState::Discharging, Some(l)) if l < 20 => "Lemerülőben",
-        (true, ChargeState::Discharging, _) => "Nem tölt",
-        (true, ChargeState::Unknown, None) => "Csatlakoztatva, szint ismeretlen",
-        (true, ChargeState::Unknown, Some(_)) => "Csatlakoztatva",
+        (false, _, _) => t("Nincs csatlakoztatva", "Not connected"),
+        (true, ChargeState::Charging, _) => t("Töltés", "Charging"),
+        (true, ChargeState::Full, _) => t("Feltöltve", "Fully charged"),
+        (true, ChargeState::Discharging, Some(l)) if l < 20 => t("Lemerülőben", "Low battery"),
+        (true, ChargeState::Discharging, _) => t("Nem tölt", "Not charging"),
+        (true, ChargeState::Unknown, None) => t("Csatlakoztatva, szint ismeretlen", "Connected, level unknown"),
+        (true, ChargeState::Unknown, Some(_)) => t("Csatlakoztatva", "Connected"),
     }
 }
 
 fn updated_text(updated: Option<u64>) -> String {
+    let label = t("Frissítve", "Updated");
     match updated {
-        None => "Frissítve: –".into(),
-        Some(s) if s < 60 => "Frissítve: most".into(),
-        Some(s) if s < 3600 => format!("Frissítve: {} perce", s / 60),
-        Some(s) => format!("Frissítve: {} órája", s / 3600),
+        None => format!("{label}: –"),
+        Some(s) if s < 60 => format!("{label}: {}", t("most", "now")),
+        Some(s) if s < 3600 => format!("{label}: {} {}", s / 60, t("perce", "min ago")),
+        Some(s) => format!("{label}: {} {}", s / 3600, t("órája", "h ago")),
     }
 }
 
@@ -293,9 +296,9 @@ unsafe fn draw_content(
     p.text("NapCat", 15.0, DWRITE_FONT_WEIGHT_SEMI_BOLD, rect(PAD + 36.0, y, 80.0, HEAD), fg, DWRITE_TEXT_ALIGNMENT_LEADING)?;
     let charging = devices.iter().filter(|d| d.is_charging()).count();
     let summary = match (devices.len(), charging) {
-        (0, _) => "nincs eszköz".to_string(),
-        (n, 0) => format!("{n} eszköz"),
-        (n, c) => format!("{n} eszköz · {c} tölt"),
+        (0, _) => t("nincs eszköz", "no devices").to_string(),
+        (n, 0) => format!("{n} {}", t("eszköz", if n == 1 { "device" } else { "devices" })),
+        (n, c) => format!("{n} {} · {c} {}", t("eszköz", if n == 1 { "device" } else { "devices" }), t("tölt", "charging")),
     };
     let title_w = p.text_width("NapCat", 15.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
     p.text(&summary, 12.0, DWRITE_FONT_WEIGHT_NORMAL, rect(PAD + 36.0 + title_w + 8.0, y, 160.0, HEAD), sub, DWRITE_TEXT_ALIGNMENT_LEADING)?;
@@ -315,7 +318,11 @@ unsafe fn draw_content(
             Some(e) => e.clone(),
             None => d.level_text().unwrap_or_default(),
         };
-        let msg = format!("{} {} lemerülőben – {left} van hátra", article(&d.name), d.name);
+        let msg = if crate::i18n::english() {
+            format!("{} is running low – {left} left", d.name)
+        } else {
+            format!("{} {} lemerülőben – {left} van hátra", article(&d.name), d.name)
+        };
         p.text(&msg, 12.5, DWRITE_FONT_WEIGHT_NORMAL, rect(PAD + 38.0, y, W - 2.0 * PAD - 50.0, ALERT), fg, DWRITE_TEXT_ALIGNMENT_LEADING)?;
         y += ALERT + GAP;
     }
@@ -327,7 +334,7 @@ unsafe fn draw_content(
         _ => ("–".to_string(), sub),
     };
     if devices.is_empty() {
-        p.text("Csatlakoztass egy támogatott eszközt.", 12.5, DWRITE_FONT_WEIGHT_NORMAL, rect(PAD + 8.0, y, W - 2.0 * PAD, 40.0), sub, DWRITE_TEXT_ALIGNMENT_LEADING)?;
+        p.text(t("Csatlakoztass egy támogatott eszközt.", "Connect a supported device."), 12.5, DWRITE_FONT_WEIGHT_NORMAL, rect(PAD + 8.0, y, W - 2.0 * PAD, 40.0), sub, DWRITE_TEXT_ALIGNMENT_LEADING)?;
         y += 40.0;
     } else if grid {
         let tw = (W - 2.0 * PAD - 2.0 * TILE_GAP) / 3.0;
@@ -367,7 +374,7 @@ unsafe fn draw_content(
     p.line(PAD, y + 0.5, W - PAD, y + 0.5, theme.border())?;
     let fy = y + 13.0;
     p.text(&updated_text(updated), 12.0, DWRITE_FONT_WEIGHT_NORMAL, rect(PAD, fy, 160.0, 32.0), sub, DWRITE_TEXT_ALIGNMENT_LEADING)?;
-    let label = "Eszköz párosítása";
+    let label = t("Eszköz párosítása", "Pair a device");
     let bw = 12.0 + 14.0 + 6.0 + p.text_width(label, 12.5, DWRITE_FONT_WEIGHT_MEDIUM)? + 12.0;
     let pair_r = rect(W - PAD - bw, fy, bw, 32.0);
     let accent_bg = if hover == Some(Hit::Pair) { D2D1_COLOR_F { a: 0.85, ..accent } } else { accent };

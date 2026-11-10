@@ -65,14 +65,15 @@ impl DeviceState {
 
     /// Tooltip szöveg, pl. "Logitech G305 – 72% – nem tölt".
     pub fn tooltip(&self) -> String {
+        use crate::i18n::t;
         if !self.connected {
-            return format!("{} – nincs csatlakoztatva", self.name);
+            return format!("{} – {}", self.name, t("nincs csatlakoztatva", "not connected"));
         }
-        let level = self.level_text().unwrap_or_else(|| "ismeretlen szint".to_string());
+        let level = self.level_text().unwrap_or_else(|| t("ismeretlen szint", "level unknown").to_string());
         let charge = match self.charge {
-            ChargeState::Discharging => "nem tölt",
-            ChargeState::Charging => "tölt",
-            ChargeState::Full => "feltöltve",
+            ChargeState::Discharging => t("nem tölt", "not charging"),
+            ChargeState::Charging => t("tölt", "charging"),
+            ChargeState::Full => t("feltöltve", "fully charged"),
             ChargeState::Unknown => return format!("{} – {level}", self.name),
         };
         format!("{} – {level} – {charge}", self.name)

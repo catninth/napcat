@@ -1,6 +1,6 @@
 # NapCat feature gallery
 
-Real NapCat UI, in the app's Hungarian interface, with the same linked, two-column layout as the
+Real NapCat UI in English (the app follows the Windows display language; Hungarian is also built in), with the same linked, two-column layout as the
 ClipCat and GitCat galleries. Click any image to open the full-resolution PNG.
 
 The flyout panel, tooltip and settings window are drawn by NapCat's own Direct2D code into an
@@ -71,7 +71,7 @@ notifications on screen and expects the dark Windows theme).
     <td width="50%" valign="top">
       <a href="settings/general-dark.png"><img src="settings/general-dark.png" alt="NapCat settings window, dark theme" width="100%"></a><br>
       <strong>Settings</strong><br>
-      Startup, tray mode, icon style, theme, accent color, per-device tray icons, notifications and refresh rate.
+      Startup, tray mode, icon style, theme, language, accent color, per-device tray icons, notifications, refresh rate, and the version with one-click update install.
     </td>
     <td width="50%" valign="top">
       <a href="settings/general-light.png"><img src="settings/general-light.png" alt="NapCat settings window, light theme" width="100%"></a><br>

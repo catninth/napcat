@@ -87,7 +87,7 @@ fn device_name(product: &str) -> String {
         .find_map(|s| name.strip_suffix(s))
         .unwrap_or(name)
         .trim();
-    if name.is_empty() { "Compx egér".into() } else { name.into() }
+    if name.is_empty() { crate::i18n::t("Compx egér", "Compx mouse").into() } else { name.into() }
 }
 
 #[derive(Default)]

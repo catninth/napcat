@@ -50,7 +50,7 @@ no WebView, no UI framework, and practically zero CPU when idle.
 </table>
 
 The [settings page](docs/gallery/settings/general-dark.png) shows the version and installs updates
-with one click. Screenshots show the Hungarian UI with simulated devices; the
+with one click. Screenshots show the English UI with simulated devices; the
 [full gallery](docs/gallery/README.md) has all 14 images and capture details.
 
 ## Status
@@ -59,6 +59,7 @@ with one click. Screenshots show the Hungarian UI with simulated devices; the
 |---|---|
 | Tray icons (one per device or one for the most urgent), ring / percent / badge / bar styles | done |
 | Flyout panel, rich tooltip, settings window, Devices page (add, remove, reorder, type) | done |
+| English and Hungarian UI (follows the Windows display language, or pick one in settings) | done |
 | Toast notifications (low battery with snooze, fully charged), quiet mode in full screen | done |
 | Time estimates from level history | done |
 | Installer (Inno Setup), auto-update from GitHub Releases via [catninth/updater](https://github.com/catninth/updater) | done |

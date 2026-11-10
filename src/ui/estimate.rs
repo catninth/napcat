@@ -54,36 +54,61 @@ impl History {
             return None;
         }
         let rate = delta.abs() as f32 / secs; // % / mp
+        let en = crate::i18n::english();
         match (d.charge, delta < 0) {
-            (ChargeState::Discharging, true) => Some(format!("kb. {}", duration(level / rate))),
-            (ChargeState::Charging, false) if level < 100.0 => Some(format!("{} a telig", short_duration((100.0 - level) / rate))),
+            (ChargeState::Discharging, true) => Some(format!("{} {}", if en { "about" } else { "kb." }, duration(level / rate))),
+            (ChargeState::Charging, false) if level < 100.0 => {
+                Some(format!("{} {}", short_duration((100.0 - level) / rate), if en { "to full" } else { "a telig" }))
+            }
             _ => None,
         }
     }
 }
 
-/// "40 perc", "3 óra", "4 nap".
+/// Angol többes szám: "1 hour", "3 hours".
+fn plural(n: u64, one: &str) -> String {
+    if n == 1 { format!("1 {one}") } else { format!("{n} {one}s") }
+}
+
+/// "40 perc", "3 óra", "4 nap" / "40 min", "3 hours", "4 days".
 fn duration(secs: f32) -> String {
     let mins = (secs / 60.0).round() as u64;
+    let en = crate::i18n::english();
     match mins {
+        ..=59 if en => format!("{} min", mins.max(1)),
         ..=59 => format!("{} perc", mins.max(1)),
-        60..=1439 => format!("{} óra", (mins as f32 / 60.0).round() as u64),
-        _ => format!("{} nap", (mins as f32 / 1440.0).round() as u64),
+        60..=1439 => {
+            let h = (mins as f32 / 60.0).round() as u64;
+            if en { plural(h, "hour") } else { format!("{h} óra") }
+        }
+        _ => {
+            let d = (mins as f32 / 1440.0).round() as u64;
+            if en { plural(d, "day") } else { format!("{d} nap") }
+        }
     }
 }
 
-/// "1 ó 10 p", "35 p".
+/// "1 ó 10 p", "35 p" / "1 h 10 min", "35 min".
 fn short_duration(secs: f32) -> String {
     let mins = (secs / 60.0).round() as u64;
+    let (h_unit, m_unit) = if crate::i18n::english() { ("h", "min") } else { ("ó", "p") };
     match (mins / 60, mins % 60) {
-        (0, m) => format!("{} p", m.max(1)),
-        (h, 0) => format!("{h} ó"),
-        (h, m) => format!("{h} ó {m} p"),
+        (0, m) => format!("{} {m_unit}", m.max(1)),
+        (h, 0) => format!("{h} {h_unit}"),
+        (h, m) => format!("{h} {h_unit} {m} {m_unit}"),
     }
 }
 
-/// "most", "5 perce", "2 órája", "3 napja".
+/// "most", "5 perce", "2 órája", "3 napja" / "now", "5 min ago", "2 hours ago", "3 days ago".
 fn ago(secs: u64) -> String {
+    if crate::i18n::english() {
+        return match secs {
+            ..=59 => "now".into(),
+            60..=3599 => format!("{} min ago", secs / 60),
+            3600..=86399 => format!("{} ago", plural(secs / 3600, "hour")),
+            _ => format!("{} ago", plural(secs / 86400, "day")),
+        };
+    }
     match secs {
         ..=59 => "most".into(),
         60..=3599 => format!("{} perce", secs / 60),

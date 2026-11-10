@@ -69,9 +69,11 @@ fn escape(s: &str) -> String {
 pub fn show(hwnd: HWND, title: &str, text: &str, snooze: Option<&str>) -> Result<()> {
     let actions = snooze.map_or(String::new(), |id| {
         format!(
-            "<actions><action content=\"Szólj 30 perc múlva\" arguments=\"snooze:{}\"/>\
-             <action content=\"Elvetés\" arguments=\"dismiss\" activationType=\"system\"/></actions>",
-            escape(id)
+            "<actions><action content=\"{}\" arguments=\"snooze:{}\"/>\
+             <action content=\"{}\" arguments=\"dismiss\" activationType=\"system\"/></actions>",
+            crate::i18n::t("Szólj 30 perc múlva", "Remind me in 30 minutes"),
+            escape(id),
+            crate::i18n::t("Elvetés", "Dismiss")
         )
     });
     let xml = format!(

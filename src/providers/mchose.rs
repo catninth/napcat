@@ -113,7 +113,7 @@ fn device_name(product: &str) -> String {
         .find_map(|s| name.strip_suffix(s))
         .unwrap_or(name)
         .trim();
-    if name.is_empty() || name.eq_ignore_ascii_case("MCHOSE") { "MCHOSE egér".into() } else { name.into() }
+    if name.is_empty() || name.eq_ignore_ascii_case("MCHOSE") { crate::i18n::t("MCHOSE egér", "MCHOSE mouse").into() } else { name.into() }
 }
 
 /// Kábelen és vevőn ugyanaz a termék név, így a két kapcsolat egy eszköz marad.

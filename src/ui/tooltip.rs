@@ -128,7 +128,7 @@ pub unsafe fn draw(ctx: &ID2D1DeviceContext, renderer: &IconRenderer, devices: &
     ctx.Clear(Some(&if theme.light { super::theme::rgb(0xFFFFFF, 1.0) } else { super::theme::rgb(0x26272C, 1.0) }));
     let mut y = PAD_Y;
     if devices.is_empty() {
-        p.text("Nincs eszköz", 12.5, DWRITE_FONT_WEIGHT_NORMAL, rect(PAD_X, y, W - 2.0 * PAD_X, ROW), theme.sub(), DWRITE_TEXT_ALIGNMENT_LEADING)?;
+        p.text(crate::i18n::t("Nincs eszköz", "No devices"), 12.5, DWRITE_FONT_WEIGHT_NORMAL, rect(PAD_X, y, W - 2.0 * PAD_X, ROW), theme.sub(), DWRITE_TEXT_ALIGNMENT_LEADING)?;
     }
     for d in devices {
         // Kis gyűrű: halvány háttérkör, rajta a szint íve (leválasztva szaggatott, ív nélkül).

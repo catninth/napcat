@@ -16,7 +16,7 @@ pub struct XInput {
 }
 
 fn name(slot: u32) -> String {
-    format!("Xbox kontroller {}", slot + 1)
+    format!("{} {}", crate::i18n::t("Xbox kontroller", "Xbox controller"), slot + 1)
 }
 
 impl Provider for XInput {

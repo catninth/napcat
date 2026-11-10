@@ -33,6 +33,7 @@ use super::theme::{self, Theme};
 use crate::model::{ChargeState, DeviceKind, DeviceState};
 use crate::providers::custom;
 use crate::settings::{self, Settings};
+use crate::i18n::t;
 use crate::updater;
 use crate::worker::{self, WM_DEVICES, WM_UPDATE};
 
@@ -65,7 +66,12 @@ unsafe fn on_update(hwnd: HWND) {
     if auto {
         start_install(hwnd);
     } else {
-        notify_app(hwnd, &format!("Új NapCat verzió: {}", release.version), "Telepítés: jobb klikk az ikonon → Frissítés telepítése.", false);
+        notify_app(
+            hwnd,
+            &format!("{}: {}", t("Új NapCat verzió", "New NapCat version"), release.version),
+            t("Telepítés: Beállítások › Névjegy, vagy jobb klikk az ikonon.", "Install it from Settings › About, or right-click the icon."),
+            false,
+        );
     }
 }
 
@@ -107,7 +113,12 @@ unsafe fn on_update_ready(hwnd: HWND) {
         _ => {
             INSTALLING.store(false, Ordering::Relaxed);
             settings_window::refresh();
-            notify_app(hwnd, "A frissítés nem sikerült", "A letöltés vagy az ellenőrzés hibát adott; később újra próbálható.", true);
+            notify_app(
+                hwnd,
+                t("A frissítés nem sikerült", "The update failed"),
+                t("A letöltés vagy az ellenőrzés hibát adott; később újra próbálható.", "The download or its check failed; you can try again later."),
+                true,
+            );
         }
     }
 }
@@ -225,7 +236,7 @@ impl TrayIcon {
         if let Some(summary) = &self.summary {
             summary.clone()
         } else if self.is_placeholder() {
-            "NapCat – nincs megjeleníthető eszköz".into()
+            t("NapCat – nincs megjeleníthető eszköz", "NapCat – no devices to show").into()
         } else {
             self.state.tooltip()
         }
@@ -425,6 +436,7 @@ impl App {
     /// A beállítások alkalmazása (induláskor és a beállítások ablak változásainál).
     unsafe fn apply_settings(&mut self, hwnd: HWND) {
         let s = &self.settings;
+        crate::i18n::set(&s.language);
         theme::configure(&s.theme, s.use_accent, s.custom_accent, s.ring_accent);
         worker::set_updates_enabled(s.update_mode != "off");
         worker::set_poll_secs(s.poll_secs);
@@ -542,7 +554,11 @@ impl App {
 }
 
 fn low_battery_text(name: &str, level: u8) -> (String, String) {
-    (format!("{name} lemerülőben"), format!("{name}: {level}% maradt. Tedd töltőre."))
+    if crate::i18n::english() {
+        (format!("{name} is running low"), format!("{name}: {level}% left. Time to charge it."))
+    } else {
+        (format!("{name} lemerülőben"), format!("{name}: {level}% maradt. Tedd töltőre."))
+    }
 }
 
 thread_local! {
@@ -599,6 +615,8 @@ pub unsafe fn run(hinst: HINSTANCE) -> Result<()> {
     let hwnd = CreateWindowExW(WINDOW_EX_STYLE(0), class, w!("NapCat"), WINDOW_STYLE(0), 0, 0, 0, 0, None, None, hinst, None)?;
     TASKBAR_CREATED.store(RegisterWindowMessageW(w!("TaskbarCreated")), Ordering::Relaxed);
 
+    // A nyelv az eszközszál indulása előtt, mert a providerek tartalék eszköznevei is fordítottak.
+    crate::i18n::set(&Settings::load().language);
     APP.set(Some(App {
         devices: Vec::new(),
         placeholder: TrayIcon::placeholder(),
@@ -698,7 +716,12 @@ unsafe fn on_devices(hwnd: HWND) {
                 }
             }
             if d.full_reached() && app.settings.notify_full {
-                notes.push((d.state.id.clone(), format!("{} feltöltve", d.state.name), "100%, lecsatlakoztathatod a töltőről.".into(), false));
+                notes.push((
+                    d.state.id.clone(),
+                    format!("{} {}", d.state.name, t("feltöltve", "is fully charged")),
+                    t("100%, lecsatlakoztathatod a töltőről.", "100%, you can unplug the charger.").into(),
+                    false,
+                ));
             }
         }
         app.reorder(hwnd);
@@ -711,9 +734,13 @@ unsafe fn on_devices(hwnd: HWND) {
             if let Some(icon) = app.icons_mut().find(|i| i.shown) {
                 icon.notify(
                     hwnd,
-                    "A NapCat fut",
-                    "Ha nem látod az ikonokat, a tálca ^ gombja alatt vannak. Kitűzés: húzd őket a tálcára, \
-                     vagy Beállítások › Személyre szabás › Tálca › Egyéb tálcaikonok.",
+                    t("A NapCat fut", "NapCat is running"),
+                    t(
+                        "Ha nem látod az ikonokat, a tálca ^ gombja alatt vannak. Kitűzés: húzd őket a tálcára, \
+                         vagy Beállítások › Személyre szabás › Tálca › Egyéb tálcaikonok.",
+                        "If you can't see the icons, they are under the ^ button on the taskbar. To pin them, drag them \
+                         onto the taskbar, or use Settings › Personalization › Taskbar › Other system tray icons.",
+                    ),
                     false,
                 );
             }
@@ -798,24 +825,24 @@ unsafe fn show_menu(hwnd: HWND, uid: u32, x: i32, y: i32) {
     let _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, text(format!("NapCat {}", env!("CARGO_PKG_VERSION"))));
     if let Some(release) = updater::AVAILABLE.lock().ok().and_then(|a| a.clone()) {
         let busy = if INSTALLING.load(Ordering::Relaxed) { MF_GRAYED } else { MF_ENABLED };
-        let _ = AppendMenuW(menu, MF_STRING | busy, ID_UPDATE, text(format!("Frissítés telepítése ({})", release.version)));
+        let _ = AppendMenuW(menu, MF_STRING | busy, ID_UPDATE, text(format!("{} ({})", t("Frissítés telepítése", "Install update"), release.version)));
     }
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
-    let _ = AppendMenuW(menu, MF_STRING, ID_SETTINGS, w!("Beállítások…"));
+    let _ = AppendMenuW(menu, MF_STRING, ID_SETTINGS, text(t("Beállítások…", "Settings…").into()));
     if let Some(name) = clicked {
-        let _ = AppendMenuW(menu, MF_STRING, ID_HIDE, text(format!("{name} elrejtése")));
+        let _ = AppendMenuW(menu, MF_STRING, ID_HIDE, text(if crate::i18n::english() { format!("Hide {name}") } else { format!("{name} elrejtése") }));
     }
     if !hidden_names.is_empty() {
         if let Ok(sub) = CreatePopupMenu() {
             for (i, name) in &hidden_names {
                 let _ = AppendMenuW(sub, MF_STRING, ID_SHOW_BASE + i, text(name.clone()));
             }
-            let _ = AppendMenuW(menu, MF_POPUP, sub.0 as usize, w!("Rejtett eszközök megjelenítése"));
+            let _ = AppendMenuW(menu, MF_POPUP, sub.0 as usize, text(t("Rejtett eszközök megjelenítése", "Show hidden devices").into()));
         }
     }
-    let _ = AppendMenuW(menu, MF_STRING | check(settings::autostart_enabled()), ID_AUTOSTART, w!("Indítás a Windows-zal"));
+    let _ = AppendMenuW(menu, MF_STRING | check(settings::autostart_enabled()), ID_AUTOSTART, text(t("Indítás a Windows-zal", "Start with Windows").into()));
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
-    let _ = AppendMenuW(menu, MF_STRING, ID_EXIT, w!("Kilépés"));
+    let _ = AppendMenuW(menu, MF_STRING, ID_EXIT, text(t("Kilépés", "Exit").into()));
 
     // Előtérbe kell hozni, különben a menü nem tűnik el, ha mellé kattintanak.
     let _ = SetForegroundWindow(hwnd);

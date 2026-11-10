@@ -1,5 +1,6 @@
 #![windows_subsystem = "windows"]
 
+mod i18n;
 mod model;
 mod providers;
 mod settings;

@@ -47,12 +47,12 @@ fn dev(id: &str, name: &str, kind: DeviceKind, level: Option<u8>, charge: Charge
 /// headset és egy leválasztott kontroller.
 fn devices() -> Vec<DeviceState> {
     vec![
-        dev("vgn", "VGN Dragonfly F1", DeviceKind::Mouse, Some(50), ChargeState::Discharging, true, Some("kb. 2 nap")),
-        dev("mchose", "MCHOSE A7 V2 Ultra+", DeviceKind::Mouse, Some(64), ChargeState::Charging, true, Some("1 ó 10 p a telig")),
-        dev("rk", "RK R75 Pro", DeviceKind::Keyboard, Some(9), ChargeState::Discharging, true, Some("kb. 40 perc")),
-        dev("ds4", "DualShock 4", DeviceKind::Controller, Some(72), ChargeState::Discharging, true, Some("kb. 5 óra")),
+        dev("vgn", "VGN Dragonfly F1", DeviceKind::Mouse, Some(50), ChargeState::Discharging, true, Some("about 2 days")),
+        dev("mchose", "MCHOSE A7 V2 Ultra+", DeviceKind::Mouse, Some(64), ChargeState::Charging, true, Some("1 h 10 min to full")),
+        dev("rk", "RK R75 Pro", DeviceKind::Keyboard, Some(9), ChargeState::Discharging, true, Some("about 40 min")),
+        dev("ds4", "DualShock 4", DeviceKind::Controller, Some(72), ChargeState::Discharging, true, Some("about 5 hours")),
         dev("g435", "Logitech G435", DeviceKind::Headset, None, ChargeState::Unknown, true, None),
-        dev("xbox", "Xbox kontroller", DeviceKind::Controller, None, ChargeState::Unknown, false, Some("2 órája")),
+        dev("xbox", "Xbox controller", DeviceKind::Controller, None, ChargeState::Unknown, false, Some("2 hours ago")),
     ]
 }
 
@@ -129,6 +129,8 @@ fn use_theme(light: bool) -> Theme {
 #[test]
 #[ignore = "felülírja a docs/gallery képeit"]
 fn gallery() {
+    // A galéria angol felülettel készül.
+    crate::i18n::set("en");
     let c = Canvas::new();
     let devices = devices();
     let candidates = vec![
@@ -260,6 +262,8 @@ fn gallery_toasts() {
     use windows::UI::Notifications::ToastNotificationManager;
     use windows::Win32::UI::HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
     use windows::Win32::UI::WindowsAndMessaging::*;
+    // A galéria angol felülettel készül.
+    crate::i18n::set("en");
     let c = Canvas::new();
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -270,8 +274,8 @@ fn gallery_toasts() {
         let _ = history.ClearWithId(&aumid);
         std::thread::sleep(std::time::Duration::from_secs(2));
         let shots = [
-            ("low-battery", "RK R75 Pro lemerülőben", "RK R75 Pro: 9% maradt. Tedd töltőre.", Some("rk")),
-            ("fully-charged", "MCHOSE A7 V2 Ultra+ feltöltve", "100%, lecsatlakoztathatod a töltőről.", None),
+            ("low-battery", "RK R75 Pro is running low", "RK R75 Pro: 9% left. Time to charge it.", Some("rk")),
+            ("fully-charged", "MCHOSE A7 V2 Ultra+ is fully charged", "100%, you can unplug the charger.", None),
         ];
         for (file, title, text, snooze) in shots {
             super::toast::show(hwnd, title, text, snooze).unwrap();

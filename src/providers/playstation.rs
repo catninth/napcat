@@ -25,7 +25,7 @@ fn model(pid: u16) -> Option<(Family, &'static str)> {
         0x0CE6 => (Family::DualSense, "DualSense"),
         0x0DF2 => (Family::DualSense, "DualSense Edge"),
         0x05C4 | 0x09CC => (Family::DualShock4, "DualShock 4"),
-        0x0BA0 => (Family::DualShock4, "DualShock 4 (vevő)"),
+        0x0BA0 => (Family::DualShock4, "DualShock 4 (adapter)"),
         _ => return None,
     })
 }

@@ -71,6 +71,8 @@ pub struct Settings {
     pub ring_accent: bool,
     /// Frissítési gyakoriság másodpercben (30, 60, 300); a providerek időközei ehhez arányosak.
     pub poll_secs: u32,
+    /// A felület nyelve: "auto" (a Windows nyelve), "hu" vagy "en".
+    pub language: String,
     /// Frissítések: "auto" (letölt és telepít), "notify" (csak szól) vagy "off".
     pub update_mode: String,
     /// Az első indításkori tipp (ikonok kitűzése) már megjelent.
@@ -98,6 +100,7 @@ impl Default for Settings {
             custom_accent: None,
             ring_accent: false,
             poll_secs: 60,
+            language: "auto".into(),
             update_mode: "notify".into(),
             pin_tip_shown: false,
             flyout_grid: false,
@@ -158,6 +161,7 @@ impl Settings {
                 "custom_accent" => s.custom_accent = u32::from_str_radix(text.trim_start_matches('#'), 16).ok(),
                 "ring_accent" => s.ring_accent = value == "true",
                 "poll_secs" => s.poll_secs = value.parse::<u32>().map_or(60, |v| v.clamp(30, 300)),
+                "language" => s.language = text,
                 "update_mode" => s.update_mode = text,
                 "pin_tip_shown" => s.pin_tip_shown = value == "true",
                 "flyout_grid" => s.flyout_grid = value == "true",
@@ -191,7 +195,7 @@ impl Settings {
             "# NapCat beállítások\n\
              notify_low = {}\nlow_threshold = {}\nnotify_full = {}\nquiet_fullscreen = {}\n\
              tray_mode = {}\nicon_style = {}\ntheme = {}\nuse_accent = {}\ncustom_accent = {}\nring_accent = {}\n\
-             poll_secs = {}\nupdate_mode = {}\npin_tip_shown = {}\nflyout_grid = {}\nhidden = [{}]\nremoved = [{}]\ncustom = [{}]\nkinds = [{}]\norder = [{}]\n",
+             poll_secs = {}\nlanguage = {}\nupdate_mode = {}\npin_tip_shown = {}\nflyout_grid = {}\nhidden = [{}]\nremoved = [{}]\ncustom = [{}]\nkinds = [{}]\norder = [{}]\n",
             self.notify_low,
             self.low_threshold,
             self.notify_full,
@@ -203,6 +207,7 @@ impl Settings {
             accent,
             self.ring_accent,
             self.poll_secs,
+            q(&self.language),
             q(&self.update_mode),
             self.pin_tip_shown,
             self.flyout_grid,

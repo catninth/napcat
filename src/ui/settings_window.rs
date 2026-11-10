@@ -30,6 +30,7 @@ use super::tray;
 use crate::model::{ChargeState, DeviceKind, DeviceState};
 use crate::providers::custom::{self, Candidate};
 use crate::settings::{self, CustomDevice, Settings};
+use crate::i18n::t;
 use crate::updater;
 
 /// Üzenet a tálca ablaknak: a beállítások megváltoztak (újraolvasás a fájlból).
@@ -63,6 +64,8 @@ enum Act {
     Theme(&'static str),
     IconStyle(&'static str),
     Updates(&'static str),
+    /// A felület nyelve: "auto", "hu" vagy "en".
+    Language(&'static str),
     UseAccent,
     Source(bool),
     Swatch(u32),
@@ -95,11 +98,11 @@ enum Act {
 
 fn kind_label(k: DeviceKind) -> &'static str {
     match k {
-        DeviceKind::Keyboard => "Billentyűzet",
-        DeviceKind::Mouse => "Egér",
-        DeviceKind::Headset => "Fejhallgató",
-        DeviceKind::Controller => "Kontroller",
-        DeviceKind::Other => "Egyéb",
+        DeviceKind::Keyboard => t("Billentyűzet", "Keyboard"),
+        DeviceKind::Mouse => t("Egér", "Mouse"),
+        DeviceKind::Headset => t("Fejhallgató", "Headset"),
+        DeviceKind::Controller => t("Kontroller", "Controller"),
+        DeviceKind::Other => t("Egyéb", "Other"),
     }
 }
 
@@ -169,9 +172,15 @@ unsafe fn set_page(w: &mut Window, page: Page) {
     // Az új oldal beúszik.
     w.anims.set("page", 0.0);
     w.candidates = candidates_for(&w.devices);
-    let title = if page == Page::Devices { w!("NapCat – Eszközök") } else { w!("NapCat – Beállítások") };
-    let _ = SetWindowTextW(w.hwnd, title);
+    set_title(w.hwnd, page);
     let _ = InvalidateRect(w.hwnd, None, false);
+}
+
+/// Az ablak címe az oldal és a nyelv szerint.
+unsafe fn set_title(hwnd: HWND, page: Page) {
+    let name = if page == Page::Devices { t("Eszközök", "Devices") } else { t("Beállítások", "Settings") };
+    let title: Vec<u16> = format!("NapCat – {name}").encode_utf16().chain(Some(0)).collect();
+    let _ = SetWindowTextW(hwnd, PCWSTR(title.as_ptr()));
 }
 
 /// A hozzáadható eszközök: ami a Windowsban látszik, de egyik NapCat eszköz sem az (VID/PID szerint).
@@ -206,7 +215,7 @@ unsafe fn create(owner: HWND, devices: Vec<DeviceState>, page: Page) -> Result<(
         ..Default::default()
     };
     RegisterClassW(&wc);
-    let hwnd = CreateWindowExW(WINDOW_EX_STYLE(0), class, w!("NapCat – Beállítások"), STYLE, CW_USEDEFAULT, CW_USEDEFAULT, 100, 100, None, None, hinst, None)?;
+    let hwnd = CreateWindowExW(WINDOW_EX_STYLE(0), class, w!("NapCat"), STYLE, CW_USEDEFAULT, CW_USEDEFAULT, 100, 100, None, None, hinst, None)?;
     let dpi = GetDpiForWindow(hwnd) as f32;
     let settings = Settings::load();
     WINDOW.set(Some(Window {
@@ -310,6 +319,11 @@ unsafe fn on_act(w: &mut Window, act: Act) {
         }
         Act::IconStyle(k) => s.icon_style = k.into(),
         Act::Updates(k) => s.update_mode = k.into(),
+        Act::Language(k) => {
+            s.language = k.into();
+            crate::i18n::set(k);
+            set_title(w.hwnd, w.page);
+        }
         Act::UseAccent => s.use_accent = !s.use_accent,
         Act::Source(custom) => s.custom_accent = if custom { Some(s.custom_accent.unwrap_or(SWATCHES[1].1)) } else { None },
         Act::Swatch(c) => s.custom_accent = Some(c),
@@ -424,10 +438,10 @@ unsafe fn drag_threshold(w: &mut Window, x: f32, track: D2D_RECT_F) {
 
 fn device_conn(d: &DeviceState) -> &'static str {
     match (d.connected, d.charge) {
-        (false, _) => "Nincs csatlakoztatva",
-        (true, ChargeState::Charging) => "Csatlakoztatva · tölt",
-        (true, ChargeState::Full) => "Csatlakoztatva · feltöltve",
-        _ => "Csatlakoztatva",
+        (false, _) => t("Nincs csatlakoztatva", "Not connected"),
+        (true, ChargeState::Charging) => t("Csatlakoztatva · tölt", "Connected · charging"),
+        (true, ChargeState::Full) => t("Csatlakoztatva · feltöltve", "Connected · fully charged"),
+        _ => t("Csatlakoztatva", "Connected"),
     }
 }
 
@@ -625,27 +639,27 @@ impl Ui<'_> {
         let right = W - MARGIN;
         let mut y = 24.0;
         self.p.logo(MARGIN, y, 32.0)?;
-        self.p.text("Eszközök", 24.0, DWRITE_FONT_WEIGHT_SEMI_BOLD, rect(MARGIN + 44.0, y, 300.0, 32.0), fg, DWRITE_TEXT_ALIGNMENT_LEADING)?;
-        self.button(right + 16.0, y + 16.0, "‹ Beállítások", false, Act::Page(Page::Settings))?;
+        self.p.text(t("Eszközök", "Devices"), 24.0, DWRITE_FONT_WEIGHT_SEMI_BOLD, rect(MARGIN + 44.0, y, 300.0, 32.0), fg, DWRITE_TEXT_ALIGNMENT_LEADING)?;
+        self.button(right + 16.0, y + 16.0, t("‹ Beállítások", "‹ Settings"), false, Act::Page(Page::Settings))?;
         y += 32.0 + SECTION_GAP;
 
         // A NapCat-ben megjelenő eszközök.
-        self.section(&mut y, "A NapCat-ben")?;
+        self.section(&mut y, t("A NapCat-ben", "In NapCat"))?;
         let active: Vec<&DeviceState> = devices.iter().filter(|d| !s.removed.contains(&d.id)).collect();
         if active.is_empty() {
-            self.row(&mut y, "Még nincs eszköz", None)?;
+            self.row(&mut y, t("Még nincs eszköz", "No devices yet"), None)?;
         }
         for d in active {
             let custom = s.custom.iter().any(|c| c.id() == d.id);
             let sub = match (custom, d.connected) {
-                (true, true) => "Kézzel hozzáadva · csatlakoztatva (akkuszint nem elérhető)",
-                (true, false) => "Kézzel hozzáadva · nincs csatlakoztatva",
+                (true, true) => t("Kézzel hozzáadva · csatlakoztatva (akkuszint nem elérhető)", "Added manually · connected (battery level not available)"),
+                (true, false) => t("Kézzel hozzáadva · nincs csatlakoztatva", "Added manually · not connected"),
                 (false, _) => device_conn(d),
             };
             let cy = self.device_row(&mut y, d, sub)?;
-            self.button(right, cy, "Eltávolítás", false, Act::Remove(d.id.clone()))?;
+            self.button(right, cy, t("Eltávolítás", "Remove"), false, Act::Remove(d.id.clone()))?;
             // Típus (glyph): automatikus, vagy a felhasználó választása; kattintásra körbejár.
-            let remove_w = self.p.text_width("Eltávolítás", 12.5, DWRITE_FONT_WEIGHT_MEDIUM)? + 28.0;
+            let remove_w = self.p.text_width(t("Eltávolítás", "Remove"), 12.5, DWRITE_FONT_WEIGHT_MEDIUM)? + 28.0;
             let label = match s.kind_override(&d.id) {
                 Some(k) => kind_label(custom::kind_from_str(k)).to_string(),
                 None => format!("{} (auto)", kind_label(d.kind)),
@@ -655,27 +669,27 @@ impl Ui<'_> {
         y += SECTION_GAP - ROW_GAP;
 
         // Hozzáadható: korábban eltávolított eszközök és a Windows által észlelt, ismeretlen eszközök.
-        self.section(&mut y, "Észlelt eszközök")?;
+        self.section(&mut y, t("Észlelt eszközök", "Detected devices"))?;
         let removed: Vec<&DeviceState> = devices.iter().filter(|d| s.removed.contains(&d.id)).collect();
         if removed.is_empty() && candidates.is_empty() {
-            self.row(&mut y, "Nincs több észlelt eszköz", Some("Csatlakoztass egy eszközt, és itt megjelenik"))?;
+            self.row(&mut y, t("Nincs több észlelt eszköz", "No other detected devices"), Some(t("Csatlakoztass egy eszközt, és itt megjelenik", "Connect a device and it shows up here")))?;
         }
         for d in removed {
-            let cy = self.device_row(&mut y, d, "Korábban eltávolítva")?;
-            self.button(right, cy, "Hozzáadás", true, Act::Restore(d.id.clone()))?;
+            let cy = self.device_row(&mut y, d, t("Korábban eltávolítva", "Removed earlier"))?;
+            self.button(right, cy, t("Hozzáadás", "Add"), true, Act::Restore(d.id.clone()))?;
         }
         for (i, c) in candidates.iter().enumerate() {
             let preview = DeviceState { connected: true, ..DeviceState::disconnected("", &c.product, c.kind) };
-            let sub = format!("USB / vevő · {:04X}:{:04X} · csak a csatlakozás látszik", c.vid, c.pid);
+            let sub = format!("{} · {:04X}:{:04X} · {}", t("USB / vevő", "USB / receiver"), c.vid, c.pid, t("csak a csatlakozás látszik", "connection only"));
             let cy = self.device_row(&mut y, &preview, &sub)?;
-            self.button(right, cy, "Hozzáadás", true, Act::Add(i))?;
+            self.button(right, cy, t("Hozzáadás", "Add"), true, Act::Add(i))?;
         }
         y += SECTION_GAP - ROW_GAP;
 
         // Új Bluetooth eszköz párosítása a Windowsban (utána itt, vagy magától megjelenik).
         self.section(&mut y, "Bluetooth")?;
-        let cy = self.row(&mut y, "Új Bluetooth eszköz párosítása", Some("A Windows Bluetooth beállításaiban; utána a NapCat magától felismeri"))?;
-        self.button(right, cy, "Párosítás", false, Act::PairBluetooth)?;
+        let cy = self.row(&mut y, t("Új Bluetooth eszköz párosítása", "Pair a new Bluetooth device"), Some(t("A Windows Bluetooth beállításaiban; utána a NapCat magától felismeri", "In the Windows Bluetooth settings; NapCat picks it up afterwards")))?;
+        self.button(right, cy, t("Párosítás", "Pair"), false, Act::PairBluetooth)?;
         Ok(y + 32.0 - ROW_GAP)
     }
 
@@ -684,31 +698,33 @@ impl Ui<'_> {
         let right = W - MARGIN;
         let mut y = 24.0;
         self.p.logo(MARGIN, y, 32.0)?;
-        self.p.text("Beállítások", 24.0, DWRITE_FONT_WEIGHT_SEMI_BOLD, rect(MARGIN + 44.0, y, 400.0, 32.0), fg, DWRITE_TEXT_ALIGNMENT_LEADING)?;
+        self.p.text(t("Beállítások", "Settings"), 24.0, DWRITE_FONT_WEIGHT_SEMI_BOLD, rect(MARGIN + 44.0, y, 400.0, 32.0), fg, DWRITE_TEXT_ALIGNMENT_LEADING)?;
         // Verzió a jobb felső sarokban; ha van frissítés, kiemelő színnel jelzi (a gomb a Névjegyben).
         let update = updater::AVAILABLE.lock().ok().and_then(|a| a.clone());
         let (version, color) = match &update {
-            Some(r) => (format!("v{} · frissítés: v{}", env!("CARGO_PKG_VERSION"), r.version), self.accent),
+            Some(r) => (format!("v{} · {}: v{}", env!("CARGO_PKG_VERSION"), t("frissítés", "update"), r.version), self.accent),
             None => (format!("v{}", env!("CARGO_PKG_VERSION")), sub),
         };
         self.p.text(&version, 12.5, DWRITE_FONT_WEIGHT_NORMAL, rect(right - 300.0, y + 8.0, 300.0, 18.0), color, DWRITE_TEXT_ALIGNMENT_TRAILING)?;
         y += 32.0 + SECTION_GAP;
 
         // Általános
-        self.section(&mut y, "Általános")?;
-        let cy = self.row(&mut y, "Indítás a Windows-zal", Some("A tálcán, csendben indul"))?;
+        self.section(&mut y, t("Általános", "General"))?;
+        let cy = self.row(&mut y, t("Indítás a Windows-zal", "Start with Windows"), Some(t("A tálcán, csendben indul", "Starts quietly in the tray")))?;
         self.switch(right, cy, autostart, Act::Startup)?;
-        let cy = self.row(&mut y, "Tálca mód", Some("Egy ikon a legsürgősebb eszközzel, vagy mindegyik külön"))?;
-        self.segmented(right, cy, &[("one", "Egy ikon"), ("each", "Eszközönként")], &s.tray_mode, Act::TrayMode)?;
-        let cy = self.row(&mut y, "Ikon stílusa", Some("Gyűrű, a szint száma, vagy nagy ikon jelvénnyel / sávval"))?;
-        self.segmented(right, cy, &[("ring", "Gyűrű"), ("percent", "Százalék"), ("pie", "Jelvény"), ("bar", "Sáv")], &s.icon_style, Act::IconStyle)?;
-        let cy = self.row(&mut y, "Téma", None)?;
-        self.segmented(right, cy, &[("system", "Rendszer"), ("dark", "Sötét"), ("light", "Világos")], &s.theme, Act::Theme)?;
+        let cy = self.row(&mut y, t("Tálca mód", "Tray mode"), Some(t("Egy ikon a legsürgősebb eszközzel, vagy mindegyik külön", "One icon for the most urgent device, or one per device")))?;
+        self.segmented(right, cy, &[("one", t("Egy ikon", "One icon")), ("each", t("Eszközönként", "Per device"))], &s.tray_mode, Act::TrayMode)?;
+        let cy = self.row(&mut y, t("Ikon stílusa", "Icon style"), Some(t("Gyűrű, a szint száma, vagy nagy ikon jelvénnyel / sávval", "Ring, the level as a number, or a large icon with a badge or bar")))?;
+        self.segmented(right, cy, &[("ring", t("Gyűrű", "Ring")), ("percent", t("Százalék", "Percent")), ("pie", t("Jelvény", "Badge")), ("bar", t("Sáv", "Bar"))], &s.icon_style, Act::IconStyle)?;
+        let cy = self.row(&mut y, t("Téma", "Theme"), None)?;
+        self.segmented(right, cy, &[("system", t("Rendszer", "System")), ("dark", t("Sötét", "Dark")), ("light", t("Világos", "Light"))], &s.theme, Act::Theme)?;
+        let cy = self.row(&mut y, t("Nyelv", "Language"), None)?;
+        self.segmented(right, cy, &[("auto", t("Rendszer", "System")), ("hu", "Magyar"), ("en", "English")], &s.language, Act::Language)?;
         y += SECTION_GAP - ROW_GAP;
 
         // Kiemelő szín
-        self.section(&mut y, "Kiemelő szín")?;
-        let cy = self.row(&mut y, "Kiemelő szín használata", Some("Kikapcsolva semleges, fehér-szürke megjelenés"))?;
+        self.section(&mut y, t("Kiemelő szín", "Accent color"))?;
+        let cy = self.row(&mut y, t("Kiemelő szín használata", "Use accent color"), Some(t("Kikapcsolva semleges, fehér-szürke megjelenés", "When off, a neutral white and gray look")))?;
         self.switch(right, cy, s.use_accent, Act::UseAccent)?;
         if s.use_accent {
             let custom = s.custom_accent.is_some();
@@ -716,9 +732,9 @@ impl Ui<'_> {
             self.p.fill(rect(MARGIN, y, W - 2.0 * MARGIN, box_h), 8.0, self.theme.row())?;
             let x = MARGIN + 16.0;
             let mut by = y + 14.0;
-            self.radio(x, by, "Windows kiemelő színe", "Automatikusan követi a Személyre szabás › Színek beállítást", !custom, Act::Source(false))?;
+            self.radio(x, by, t("Windows kiemelő színe", "Windows accent color"), t("Automatikusan követi a Személyre szabás › Színek beállítást", "Follows Personalization › Colors automatically"), !custom, Act::Source(false))?;
             by += 44.0;
-            self.radio(x, by, "Egyéni szín", "Válassz a palettáról", custom, Act::Source(true))?;
+            self.radio(x, by, t("Egyéni szín", "Custom color"), t("Válassz a palettáról", "Pick one from the palette"), custom, Act::Source(true))?;
             by += 44.0;
             if custom {
                 let mut sx = x + 30.0;
@@ -741,17 +757,17 @@ impl Ui<'_> {
             by += 14.0;
             // Előnézet: gyűrű, kiemelt gomb, kapcsoló.
             self.p.fill(rect(x, by, W - 2.0 * MARGIN - 32.0, 56.0), 8.0, self.theme.window())?;
-            self.p.text("Előnézet", 12.0, DWRITE_FONT_WEIGHT_NORMAL, rect(x + 14.0, by, 70.0, 56.0), sub, DWRITE_TEXT_ALIGNMENT_LEADING)?;
+            self.p.text(t("Előnézet", "Preview"), 12.0, DWRITE_FONT_WEIGHT_NORMAL, rect(x + 14.0, by, 70.0, 56.0), sub, DWRITE_TEXT_ALIGNMENT_LEADING)?;
             let sample = DeviceState {
                 level: Some(78),
                 charge: ChargeState::Discharging,
                 connected: true,
-                ..DeviceState::disconnected("preview", "Előnézet", DeviceKind::Mouse)
+                ..DeviceState::disconnected("preview", t("Előnézet", "Preview"), DeviceKind::Mouse)
             };
             self.at(x + 96.0, by + 12.0);
             self.p.renderer.draw(self.p.ctx, &sample, 32.0, self.theme, Layout::Ring, Some(self.theme.window()))?;
             self.reset();
-            let label = "Eszköz párosítása";
+            let label = t("Eszköz párosítása", "Pair a device");
             let bw = self.p.text_width(label, 12.5, DWRITE_FONT_WEIGHT_SEMI_BOLD)? + 24.0;
             self.p.fill(rect(x + 144.0, by + 12.0, bw, 32.0), 6.0, self.accent)?;
             self.p.text(label, 12.5, DWRITE_FONT_WEIGHT_SEMI_BOLD, rect(x + 144.0, by + 12.0, bw, 32.0), self.theme.on_accent(), DWRITE_TEXT_ALIGNMENT_CENTER)?;
@@ -759,18 +775,18 @@ impl Ui<'_> {
             self.p.fill(sw, 10.0, self.accent)?;
             self.p.circle(sw.right - 10.0, by + 28.0, 6.0, self.theme.on_accent())?;
             by += 56.0 + 14.0;
-            self.p.text("Rendben állapot a kiemelő színnel", 13.5, DWRITE_FONT_WEIGHT_NORMAL, rect(x, by, 420.0, 20.0), fg, DWRITE_TEXT_ALIGNMENT_LEADING)?;
-            self.p.text("50% felett a gyűrű zöld helyett ezt a színt kapja", 12.0, DWRITE_FONT_WEIGHT_NORMAL, rect(x, by + 20.0, 420.0, 18.0), sub, DWRITE_TEXT_ALIGNMENT_LEADING)?;
+            self.p.text(t("Rendben állapot a kiemelő színnel", "Accent color for healthy levels"), 13.5, DWRITE_FONT_WEIGHT_NORMAL, rect(x, by, 420.0, 20.0), fg, DWRITE_TEXT_ALIGNMENT_LEADING)?;
+            self.p.text(t("50% felett a gyűrű zöld helyett ezt a színt kapja", "Above 50% the ring uses this color instead of green"), 12.0, DWRITE_FONT_WEIGHT_NORMAL, rect(x, by + 20.0, 420.0, 18.0), sub, DWRITE_TEXT_ALIGNMENT_LEADING)?;
             self.switch(right, by + 19.0, s.ring_accent, Act::RingAccent)?;
             y += box_h + ROW_GAP;
         }
         y += SECTION_GAP - ROW_GAP;
 
         // Eszközök a tálcán
-        self.section(&mut y, "Eszközök a tálcán")?;
+        self.section(&mut y, t("Eszközök a tálcán", "Devices in the tray"))?;
         let shown: Vec<&DeviceState> = devices.iter().filter(|d| !s.removed.contains(&d.id)).collect();
         if shown.is_empty() {
-            self.row(&mut y, "Még nincs ismert eszköz", None)?;
+            self.row(&mut y, t("Még nincs ismert eszköz", "No known devices yet"), None)?;
         }
         // Húzás közben a húzott sor a kurzort követi, a többi félrecsúszik a helye elől;
         // elengedéskor a húzott sor a helyére úszik.
@@ -797,38 +813,42 @@ impl Ui<'_> {
         }
         y = list_top + shown.len() as f32 * PITCH;
         self.list = (list_top, shown.iter().map(|d| d.id.clone()).collect());
-        let cy = self.row(&mut y, "Eszközök hozzáadása és eltávolítása", Some("A Windows által észlelt eszközök listája"))?;
-        self.button(right, cy, "Eszközök kezelése", false, Act::Page(Page::Devices))?;
+        let cy = self.row(&mut y, t("Eszközök hozzáadása és eltávolítása", "Add and remove devices"), Some(t("A Windows által észlelt eszközök listája", "The devices Windows has detected")))?;
+        self.button(right, cy, t("Eszközök kezelése", "Manage devices"), false, Act::Page(Page::Devices))?;
         y += SECTION_GAP - ROW_GAP;
 
         // Értesítések
-        self.section(&mut y, "Értesítések")?;
+        self.section(&mut y, t("Értesítések", "Notifications"))?;
         self.p.fill(rect(MARGIN, y, W - 2.0 * MARGIN, 116.0), 8.0, self.theme.row())?;
-        self.p.text("Lemerülés figyelmeztetés", 13.5, DWRITE_FONT_WEIGHT_NORMAL, rect(MARGIN + 16.0, y + 9.0, 420.0, 20.0), fg, DWRITE_TEXT_ALIGNMENT_LEADING)?;
-        let msg = format!("Szól, ha egy eszköz {}% alá esik", s.low_threshold);
+        self.p.text(t("Lemerülés figyelmeztetés", "Low battery warning"), 13.5, DWRITE_FONT_WEIGHT_NORMAL, rect(MARGIN + 16.0, y + 9.0, 420.0, 20.0), fg, DWRITE_TEXT_ALIGNMENT_LEADING)?;
+        let msg = if crate::i18n::english() {
+            format!("Warns when a device drops below {}%", s.low_threshold)
+        } else {
+            format!("Szól, ha egy eszköz {}% alá esik", s.low_threshold)
+        };
         self.p.text(&msg, 12.0, DWRITE_FONT_WEIGHT_NORMAL, rect(MARGIN + 16.0, y + 29.0, 420.0, 18.0), sub, DWRITE_TEXT_ALIGNMENT_LEADING)?;
         self.switch(right, y + 28.0, s.notify_low, Act::NotifyLow)?;
         // Küszöb csúszka.
         let sy = y + 74.0;
-        self.p.text("Küszöb", 12.0, DWRITE_FONT_WEIGHT_NORMAL, rect(MARGIN + 16.0, sy - 10.0, 60.0, 20.0), sub, DWRITE_TEXT_ALIGNMENT_LEADING)?;
+        self.p.text(t("Küszöb", "Threshold"), 12.0, DWRITE_FONT_WEIGHT_NORMAL, rect(MARGIN + 16.0, sy - 10.0, 60.0, 20.0), sub, DWRITE_TEXT_ALIGNMENT_LEADING)?;
         let track = rect(MARGIN + 90.0, sy - 2.0, W - 2.0 * MARGIN - 90.0 - 70.0, 4.0);
         // Húzás közben a gomb pontosan a kurzort követi; elengedéskor a legközelebbi 5%-os
         // lépésre ugrik (animálva). A lépések pontként és felirattal látszanak.
         let snapped = (s.low_threshold as f32 - 5.0) / 25.0;
-        let t = match self.slider {
+        let pos = match self.slider {
             Some(raw) => {
                 self.anims.set("threshold", raw);
                 raw
             }
             None => self.anims.get("threshold", snapped, 180),
         };
-        let tx = track.left + t * (track.right - track.left);
+        let tx = track.left + pos * (track.right - track.left);
         self.p.fill(track, 2.0, self.theme.control_border())?;
         self.p.fill(rect(track.left, track.top, tx - track.left, 4.0), 2.0, self.accent)?;
         for i in 0..=5 {
             let k = i as f32 / 5.0;
             let x = track.left + k * (track.right - track.left);
-            let passed = k <= t + 0.001;
+            let passed = k <= pos + 0.001;
             self.p.circle(x, sy, 3.5, if passed { self.accent } else { self.theme.sub() })?;
             let current = (k - snapped).abs() < 0.01;
             let (weight, color) = if current { (DWRITE_FONT_WEIGHT_SEMI_BOLD, fg) } else { (DWRITE_FONT_WEIGHT_NORMAL, sub) };
@@ -840,45 +860,45 @@ impl Ui<'_> {
         self.p.text(&format!("{}%", s.low_threshold), 13.0, DWRITE_FONT_WEIGHT_SEMI_BOLD, rect(right - 56.0, sy - 10.0, 40.0, 20.0), fg, DWRITE_TEXT_ALIGNMENT_TRAILING)?;
         self.hits.push((rect(track.left - 10.0, sy - 14.0, track.right - track.left + 20.0, 44.0), Act::Threshold));
         y += 116.0 + ROW_GAP;
-        let cy = self.row(&mut y, "Teli töltés értesítés", None)?;
+        let cy = self.row(&mut y, t("Teli töltés értesítés", "Fully charged notification"), None)?;
         self.switch(right, cy, s.notify_full, Act::NotifyFull)?;
-        let cy = self.row(&mut y, "Csendes mód teljes képernyőn", Some("Játék vagy film közben az értesítések várnak"))?;
+        let cy = self.row(&mut y, t("Csendes mód teljes képernyőn", "Quiet in full screen"), Some(t("Játék vagy film közben az értesítések várnak", "Notifications wait while a game or film is in full screen")))?;
         self.switch(right, cy, s.quiet_fullscreen, Act::Quiet)?;
         y += SECTION_GAP - ROW_GAP;
 
         // Teljesítmény
-        self.section(&mut y, "Teljesítmény")?;
-        let cy = self.row(&mut y, "Frissítési gyakoriság", Some("Ritkább frissítés = kevesebb erőforrás"))?;
+        self.section(&mut y, t("Teljesítmény", "Performance"))?;
+        let cy = self.row(&mut y, t("Frissítési gyakoriság", "Refresh rate"), Some(t("Ritkább frissítés = kevesebb erőforrás", "Less often = fewer resources")))?;
         let poll = match s.poll_secs {
             ..=30 => "30",
             31..=60 => "60",
             _ => "300",
         };
-        self.segmented(right, cy, &[("30", "30 másodperc"), ("60", "1 perc"), ("300", "5 perc")], poll, |k| Act::Poll(k.parse().unwrap_or(60)))?;
-        let cy = self.row(&mut y, "Frissítések", Some("Új NapCat verzió a GitHubról"))?;
-        self.segmented(right, cy, &[("auto", "Automatikus"), ("notify", "Értesítés"), ("off", "Ki")], &s.update_mode, Act::Updates)?;
+        self.segmented(right, cy, &[("30", t("30 másodperc", "30 seconds")), ("60", t("1 perc", "1 minute")), ("300", t("5 perc", "5 minutes"))], poll, |k| Act::Poll(k.parse().unwrap_or(60)))?;
+        let cy = self.row(&mut y, t("Frissítések", "Updates"), Some(t("Új NapCat verzió a GitHubról", "New NapCat versions from GitHub")))?;
+        self.segmented(right, cy, &[("auto", t("Automatikus", "Automatic")), ("notify", t("Értesítés", "Notify")), ("off", t("Ki", "Off"))], &s.update_mode, Act::Updates)?;
         y += SECTION_GAP - ROW_GAP;
 
         // Névjegy: verzió és frissítés
-        self.section(&mut y, "Névjegy")?;
+        self.section(&mut y, t("Névjegy", "About"))?;
         let available = updater::AVAILABLE.lock().ok().and_then(|a| a.clone());
         let installing = tray::INSTALLING.load(Ordering::Relaxed);
         let checking = updater::CHECKING.load(Ordering::Relaxed);
         let status = match (&available, installing, checking) {
-            (Some(r), true, _) => format!("A {} letöltése és telepítése folyamatban…", r.version),
-            (Some(r), false, _) => format!("Új verzió érhető el: {}", r.version),
-            (None, _, true) => "Frissítés keresése…".to_string(),
+            (Some(r), true, _) => format!("{} {}…", t("Letöltés és telepítés:", "Downloading and installing"), r.version),
+            (Some(r), false, _) => format!("{}: {}", t("Új verzió érhető el", "New version available"), r.version),
+            (None, _, true) => t("Frissítés keresése…", "Checking for updates…").to_string(),
             (None, _, false) => match updater::LAST_CHECK.load(Ordering::Relaxed) {
-                1 => "Ez a legfrissebb verzió".to_string(),
-                2 => "A frissítés keresése nem sikerült".to_string(),
-                _ => "Frissítések a GitHubról".to_string(),
+                1 => t("Ez a legfrissebb verzió", "You're on the latest version").to_string(),
+                2 => t("A frissítés keresése nem sikerült", "Couldn't check for updates").to_string(),
+                _ => t("Frissítések a GitHubról", "Updates from GitHub").to_string(),
             },
         };
         let title = format!("NapCat {}", env!("CARGO_PKG_VERSION"));
         let cy = self.row(&mut y, &title, Some(&status))?;
         match (&available, installing || checking) {
-            (Some(_), false) => self.button(right, cy, "Telepítés", true, Act::InstallUpdate)?,
-            (None, false) => self.button(right, cy, "Frissítés keresése", false, Act::CheckUpdate)?,
+            (Some(_), false) => self.button(right, cy, t("Telepítés", "Install"), true, Act::InstallUpdate)?,
+            (None, false) => self.button(right, cy, t("Frissítés keresése", "Check for updates"), false, Act::CheckUpdate)?,
             (_, true) => {}
         }
         Ok(y + 32.0 - ROW_GAP)
