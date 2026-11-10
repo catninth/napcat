@@ -37,6 +37,7 @@ pub const WM_FLYOUT: u32 = WM_APP + 5;
 pub const FLYOUT_GRID: usize = 1;
 pub const FLYOUT_SETTINGS: usize = 2;
 pub const FLYOUT_DEVICES: usize = 3;
+pub const FLYOUT_STATS: usize = 4;
 
 // Méretek DIP-ben (96 DPI-n pixel), a design szerint.
 const W: f32 = 380.0;
@@ -60,6 +61,7 @@ const WM_MOUSELEAVE: u32 = 0x02A3;
 enum Hit {
     View,
     Settings,
+    Stats,
     Pair,
 }
 
@@ -301,11 +303,15 @@ unsafe fn draw_content(
         (n, c) => format!("{n} {} · {c} {}", t("eszköz", if n == 1 { "device" } else { "devices" }), t("tölt", "charging")),
     };
     let title_w = p.text_width("NapCat", 15.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
-    p.text(&summary, 12.0, DWRITE_FONT_WEIGHT_NORMAL, rect(PAD + 36.0 + title_w + 8.0, y, 160.0, HEAD), sub, DWRITE_TEXT_ALIGNMENT_LEADING)?;
     let settings_r = rect(W - PAD - 32.0, y, 32.0, 32.0);
     let view_r = rect(W - PAD - 66.0, y, 32.0, 32.0);
+    let stats_r = rect(W - PAD - 100.0, y, 32.0, 32.0);
+    let summary_x = PAD + 36.0 + title_w + 8.0;
+    p.text(&summary, 12.0, DWRITE_FONT_WEIGHT_NORMAL, rect(summary_x, y, stats_r.left - 4.0 - summary_x, HEAD), sub, DWRITE_TEXT_ALIGNMENT_LEADING)?;
+    button(Hit::Stats, stats_r, &mut hits)?;
     button(Hit::View, view_r, &mut hits)?;
     button(Hit::Settings, settings_r, &mut hits)?;
+    p.icon(icon::CHART, stats_r.left + 8.0, y + 8.0, 16.0, 1.8, sub)?;
     p.icon(if grid { icon::LIST } else { icon::GRID }, view_r.left + 8.0, y + 8.0, 16.0, 1.8, sub)?;
     p.icon(icon::GEAR, settings_r.left + 8.0, y + 8.0, 16.0, 1.8, sub)?;
     y += HEAD + GAP;
@@ -422,6 +428,12 @@ unsafe fn on_click(hwnd: HWND, hit: Hit) {
         Hit::Settings => {
             if let Some(owner) = FLYOUT.with_borrow(|f| f.as_ref().map(|f| f.owner)) {
                 let _ = PostMessageW(owner, WM_FLYOUT, WPARAM(FLYOUT_SETTINGS), LPARAM(0));
+            }
+            let _ = DestroyWindow(hwnd);
+        }
+        Hit::Stats => {
+            if let Some(owner) = FLYOUT.with_borrow(|f| f.as_ref().map(|f| f.owner)) {
+                let _ = PostMessageW(owner, WM_FLYOUT, WPARAM(FLYOUT_STATS), LPARAM(0));
             }
             let _ = DestroyWindow(hwnd);
         }

@@ -16,7 +16,7 @@ Windows accent color. The interface is NapCat v0.1.1 at commit `5905a55`. To rec
 run `cargo test --release ui::gallery -- --ignored --test-threads=1` (the toast capture, `gallery_toasts`, shows two
 notifications on screen and expects the dark Windows theme).
 
-[Flyout panel](#flyout-panel) · [Tooltip](#tooltip) · [Settings](#settings) · [Devices](#devices) · [Tray icons](#tray-icons)
+[Flyout panel](#flyout-panel) · [Tooltip](#tooltip) · [Settings](#settings) · [Devices](#devices) · [Statistics](#statistics) · [Tray icons](#tray-icons)
 
 ## Flyout panel
 
@@ -94,6 +94,23 @@ notifications on screen and expects the dark Windows theme).
       <a href="settings/devices-light.png"><img src="settings/devices-light.png" alt="NapCat devices page, light theme" width="100%"></a><br>
       <strong>Light theme</strong><br>
       Unsupported devices show their USB ID and connection state only; Bluetooth pairing opens Windows settings.
+    </td>
+  </tr>
+</table>
+
+## Statistics
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="stats/dark.png"><img src="stats/dark.png" alt="NapCat statistics page, last 7 days, dark theme" width="100%"></a><br>
+      <strong>Statistics</strong><br>
+      Per device: average drain, runtime on one charge, charging time and charge cycles, the battery level and daily drain for the last 7 or 30 days (hover a chart for exact values).
+    </td>
+    <td width="50%" valign="top">
+      <a href="stats/light.png"><img src="stats/light.png" alt="NapCat statistics page, last 30 days, light theme" width="100%"></a><br>
+      <strong>Battery health</strong><br>
+      Estimated capacity since NapCat first saw the device, from how fast the battery drains compared with the first month, with a projection to 80%. The history is simulated here.
     </td>
   </tr>
 </table>

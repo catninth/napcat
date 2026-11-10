@@ -48,6 +48,7 @@ const ID_AUTOSTART: usize = 101;
 const ID_SETTINGS: usize = 102;
 const ID_HIDE: usize = 103;
 pub const ID_UPDATE: usize = 104;
+const ID_STATS: usize = 105;
 const ID_SHOW_BASE: usize = 200;
 
 /// A letöltött, ellenőrzött telepítő készen áll (READY).
@@ -617,6 +618,8 @@ pub unsafe fn run(hinst: HINSTANCE) -> Result<()> {
 
     // A nyelv az eszközszál indulása előtt, mert a providerek tartalék eszköznevei is fordítottak.
     crate::i18n::set(&Settings::load().language);
+    // Az előzmények naplója: szakadás az előző futás óta (és a túl nagy napló rövidítése).
+    crate::stats::start();
     APP.set(Some(App {
         devices: Vec::new(),
         placeholder: TrayIcon::placeholder(),
@@ -709,6 +712,7 @@ unsafe fn on_devices(hwnd: HWND) {
             };
             let d = &mut app.devices[index];
             app.histories.entry(d.state.id.clone()).or_default().record(&d.state, Instant::now());
+            crate::stats::record(&d.state);
             if let Some(t) = d.low_battery_crossed(threshold) {
                 if app.settings.notify_low {
                     let (title, text) = low_battery_text(&d.state.name, d.state.level.unwrap_or(t));
@@ -829,6 +833,7 @@ unsafe fn show_menu(hwnd: HWND, uid: u32, x: i32, y: i32) {
     }
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
     let _ = AppendMenuW(menu, MF_STRING, ID_SETTINGS, text(t("Beállítások…", "Settings…").into()));
+    let _ = AppendMenuW(menu, MF_STRING, ID_STATS, text(t("Statisztika…", "Statistics…").into()));
     if let Some(name) = clicked {
         let _ = AppendMenuW(menu, MF_STRING, ID_HIDE, text(if crate::i18n::english() { format!("Hide {name}") } else { format!("{name} elrejtése") }));
     }
@@ -866,6 +871,7 @@ unsafe fn on_command(hwnd: HWND, uid: u32, cmd: usize) {
         }
         ID_AUTOSTART => settings::set_autostart(!settings::autostart_enabled()),
         ID_SETTINGS => open_settings(hwnd, settings_window::Page::Settings),
+        ID_STATS => open_settings(hwnd, settings_window::Page::Stats),
         ID_HIDE => with_app(|app| {
             if let Some(d) = app.devices.iter().find(|d| d.uid == uid) {
                 app.settings.hidden.push(d.state.id.clone());
@@ -960,6 +966,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                     }),
                     flyout::FLYOUT_SETTINGS => open_settings(hwnd, settings_window::Page::Settings),
                     flyout::FLYOUT_DEVICES => open_settings(hwnd, settings_window::Page::Devices),
+                    flyout::FLYOUT_STATS => open_settings(hwnd, settings_window::Page::Stats),
                     _ => {}
                 }
                 LRESULT(0)
@@ -993,8 +1000,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 LRESULT(0)
             }
             WM_POWERBROADCAST => {
-                if wparam.0 as u32 == PBT_POWERSETTINGCHANGE {
-                    on_power_setting(lparam);
+                match wparam.0 as u32 {
+                    PBT_POWERSETTINGCHANGE => on_power_setting(lparam),
+                    // Alvás és ébredés: szakadás az előzményekben (a Statisztika ott nem számol).
+                    PBT_APMSUSPEND | PBT_APMRESUMEAUTOMATIC => crate::stats::gap(),
+                    _ => {}
                 }
                 LRESULT(1)
             }

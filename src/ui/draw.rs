@@ -16,6 +16,8 @@ pub mod icon {
     pub const GEAR: &str = "M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0zM19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z";
     pub const WARNING: &str = "M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z";
     pub const PLUS: &str = "M12 5v14M5 12h14";
+    /// Statisztika: oszlopdiagram.
+    pub const CHART: &str = "M4 20h16M7 16v-4M12 16V6M17 16v-7";
 }
 
 pub fn rect(x: f32, y: f32, w: f32, h: f32) -> D2D_RECT_F {
@@ -97,6 +99,69 @@ impl Painter<'_> {
         let wide: Vec<u16> = s.encode_utf16().collect();
         self.ctx.DrawText(&wide, &format, &r, &self.brush(&c)?, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
         Ok(())
+    }
+
+    /// Több soros (tördelt) szöveg a téglalap tetejétől; a szöveg magasságát adja vissza.
+    pub unsafe fn paragraph(&self, s: &str, size: f32, r: D2D_RECT_F, c: D2D1_COLOR_F) -> Result<f32> {
+        let layout = self.wrapped(s, size, r.right - r.left)?;
+        self.ctx.DrawTextLayout(D2D_POINT_2F { x: r.left, y: r.top }, &layout, &self.brush(&c)?, D2D1_DRAW_TEXT_OPTIONS_NONE);
+        let mut m = DWRITE_TEXT_METRICS::default();
+        layout.GetMetrics(&mut m)?;
+        Ok(m.height)
+    }
+
+    /// A tördelt szöveg magassága `width` szélességben (rajzolás nélkül).
+    pub unsafe fn paragraph_height(&self, s: &str, size: f32, width: f32) -> Result<f32> {
+        let mut m = DWRITE_TEXT_METRICS::default();
+        self.wrapped(s, size, width)?.GetMetrics(&mut m)?;
+        Ok(m.height)
+    }
+
+    unsafe fn wrapped(&self, s: &str, size: f32, width: f32) -> Result<IDWriteTextLayout> {
+        let dwrite = self.renderer.dwrite();
+        let format = dwrite.CreateTextFormat(w!("Segoe UI Variable Text"), None, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size, w!(""))?;
+        format.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP)?;
+        let wide: Vec<u16> = s.encode_utf16().collect();
+        dwrite.CreateTextLayout(&wide, &format, width, 10_000.0)
+    }
+
+    /// Törött vonal a pontokon át (lekerekített töréspontokkal); `dashes` nem üres: szaggatott.
+    pub unsafe fn polyline(&self, pts: &[(f32, f32)], width: f32, c: D2D1_COLOR_F, dashes: &[f32]) -> Result<()> {
+        if pts.len() < 2 {
+            return Ok(());
+        }
+        let geo = self.path(pts, None)?;
+        self.ctx.DrawGeometry(&geo, &self.brush(&c)?, width, &self.renderer.stroke_style(dashes)?);
+        Ok(())
+    }
+
+    /// A pontok alatti terület kitöltése a `base` vízszintesig.
+    pub unsafe fn area(&self, pts: &[(f32, f32)], base: f32, c: D2D1_COLOR_F) -> Result<()> {
+        if pts.len() < 2 {
+            return Ok(());
+        }
+        let geo = self.path(pts, Some(base))?;
+        self.ctx.FillGeometry(&geo, &self.brush(&c)?, None);
+        Ok(())
+    }
+
+    unsafe fn path(&self, pts: &[(f32, f32)], base: Option<f32>) -> Result<ID2D1PathGeometry1> {
+        let geo = self.renderer.d2d().CreatePathGeometry()?;
+        let sink = geo.Open()?;
+        let p = |(x, y): (f32, f32)| D2D_POINT_2F { x, y };
+        let mut all: Vec<D2D_POINT_2F> = pts.iter().map(|&q| p(q)).collect();
+        let first = match base {
+            Some(b) => {
+                all.push(p((pts[pts.len() - 1].0, b)));
+                p((pts[0].0, b))
+            }
+            None => all.remove(0),
+        };
+        sink.BeginFigure(first, if base.is_some() { D2D1_FIGURE_BEGIN_FILLED } else { D2D1_FIGURE_BEGIN_HOLLOW });
+        sink.AddLines(&all);
+        sink.EndFigure(if base.is_some() { D2D1_FIGURE_END_CLOSED } else { D2D1_FIGURE_END_OPEN });
+        sink.Close()?;
+        Ok(geo)
     }
 
     /// A szöveg szélessége (gombok méretezéséhez).

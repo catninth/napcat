@@ -1,6 +1,7 @@
 //! Beállítások ablak a design "Beállítások" artboardja szerint: Általános, Kiemelő szín, Eszközök a
 //! tálcán, Értesítések, Teljesítmény. Direct2D-vel rajzolt vezérlők (kapcsoló, szegmensválasztó,
 //! rádiógomb, színminta, csúszka); minden változás azonnal mentődik, és a tálca ablak alkalmazza.
+//! Ugyanez az ablak mutatja az Eszközök és a Statisztika (`stats_page`) oldalt is.
 
 use std::cell::RefCell;
 use std::ffi::c_void;
@@ -94,7 +95,14 @@ enum Act {
     CheckUpdate,
     /// Az elérhető frissítés letöltése és telepítése.
     InstallUpdate,
+    /// Statisztika: az eszköz, az időszak (7 / 30 nap) és a grafikon / táblázat nézet.
+    StatsDevice(String),
+    StatsRange(u32),
+    StatsTable,
 }
+
+mod stats_page;
+use stats_page::{Data as StatsData, View as StatsView};
 
 fn kind_label(k: DeviceKind) -> &'static str {
     match k {
@@ -111,6 +119,7 @@ fn kind_label(k: DeviceKind) -> &'static str {
 pub enum Page {
     Settings,
     Devices,
+    Stats,
 }
 
 struct Window {
@@ -148,6 +157,12 @@ struct Window {
     sb_drag: Option<(f32, f32)>,
     /// A címsor és a tálcagomb ikonjának állapota (változáskor újrarajzolva); None: még nincs.
     icon_style: Option<AppIcon>,
+    /// A Statisztika oldal előzményei (csak amíg az oldal nyitva van) és választásai.
+    stats: Option<StatsData>,
+    stats_view: StatsView,
+    /// A grafikonok területe (tartalom koordinátákban): fölöttük a mozgás újrarajzol.
+    zones: Vec<D2D_RECT_F>,
+    in_zone: bool,
 }
 
 thread_local! {
@@ -175,13 +190,19 @@ unsafe fn set_page(w: &mut Window, page: Page) {
     // Az új oldal beúszik.
     w.anims.set("page", 0.0);
     w.candidates = candidates_for(&w.devices);
+    // Az előzmények csak a Statisztika oldalon kellenek; máskor nem foglalnak memóriát.
+    w.stats = (page == Page::Stats).then(StatsData::load);
     set_title(w.hwnd, page);
     let _ = InvalidateRect(w.hwnd, None, false);
 }
 
 /// Az ablak címe az oldal és a nyelv szerint.
 unsafe fn set_title(hwnd: HWND, page: Page) {
-    let name = if page == Page::Devices { t("Eszközök", "Devices") } else { t("Beállítások", "Settings") };
+    let name = match page {
+        Page::Devices => t("Eszközök", "Devices"),
+        Page::Stats => t("Statisztika", "Statistics"),
+        Page::Settings => t("Beállítások", "Settings"),
+    };
     let title: Vec<u16> = format!("NapCat – {name}").encode_utf16().chain(Some(0)).collect();
     let _ = SetWindowTextW(hwnd, PCWSTR(title.as_ptr()));
 }
@@ -198,6 +219,10 @@ pub unsafe fn update_devices(devices: &[DeviceState]) {
             w.devices = devices.to_vec();
             if w.page == Page::Devices {
                 w.candidates = candidates_for(&w.devices);
+            }
+            // A Statisztika legfeljebb percenként olvassa újra a naplót.
+            if w.page == Page::Stats && w.stats.as_ref().map_or(true, |s| s.loaded.elapsed().as_secs() >= 60) {
+                w.stats = Some(StatsData::load());
             }
             let _ = InvalidateRect(w.hwnd, None, false);
         }
@@ -246,6 +271,10 @@ unsafe fn create(owner: HWND, devices: Vec<DeviceState>, page: Page) -> Result<(
         sb_drag: None,
         tracking: false,
         icon_style: None,
+        stats: None,
+        stats_view: StatsView::default(),
+        zones: Vec::new(),
+        in_zone: false,
     }));
     apply_frame(hwnd);
     place(hwnd, dpi);
@@ -392,6 +421,14 @@ unsafe fn on_act(w: &mut Window, act: Act) {
             let _ = PostMessageW(w.owner, WM_COMMAND, WPARAM(tray::ID_UPDATE), LPARAM(0));
             return;
         }
+        // A Statisztika választásai nem beállítások: nem mentődnek.
+        Act::StatsDevice(id) => w.stats_view.dev = Some(id),
+        Act::StatsRange(days) => w.stats_view.range = days,
+        Act::StatsTable => w.stats_view.table = !w.stats_view.table,
+    }
+    if matches!(w.page, Page::Stats) {
+        let _ = InvalidateRect(w.hwnd, None, false);
+        return;
     }
     changed(w);
 }
@@ -467,6 +504,8 @@ struct Ui<'a> {
     hover: Option<(f32, f32)>,
     /// A csúszka gombja húzás közben (0..1).
     slider: Option<f32>,
+    /// A grafikonok területe: fölöttük a kurzor mozgása újrarajzol (a leolvasott érték változik).
+    zones: Vec<D2D_RECT_F>,
 }
 
 impl Ui<'_> {
@@ -530,10 +569,15 @@ impl Ui<'_> {
 
     /// Szegmensválasztó a jobb szélen.
     unsafe fn segmented(&mut self, right: f32, cy: f32, options: &[(&'static str, &str)], selected: &str, act: fn(&'static str) -> Act) -> Result<()> {
+        self.segmented_bg(right, cy, self.theme.window(), options, selected, act)
+    }
+
+    /// Szegmensválasztó a jobb szélen, `bg` háttérrel.
+    unsafe fn segmented_bg(&mut self, right: f32, cy: f32, bg: D2D1_COLOR_F, options: &[(&'static str, &str)], selected: &str, act: fn(&'static str) -> Act) -> Result<()> {
         let widths: Vec<f32> = options.iter().map(|(_, label)| Ok::<f32, windows::core::Error>(self.p.text_width(label, 12.5, DWRITE_FONT_WEIGHT_MEDIUM)? + 28.0)).collect::<Result<_>>()?;
         let total = widths.iter().sum::<f32>() + 2.0 * (options.len() as f32 - 1.0) + 6.0;
         let mut x = right - 16.0 - total;
-        self.p.fill(rect(x, cy - 20.0, total, 40.0), 8.0, self.theme.window())?;
+        self.p.fill(rect(x, cy - 20.0, total, 40.0), 8.0, bg)?;
         x += 3.0;
         let mut rects = Vec::new();
         for w in widths {
@@ -950,12 +994,23 @@ unsafe fn paint(w: &mut Window) -> Result<()> {
         anims,
         hover: w.hover.map(|(x, y)| (x, y + w.scroll)),
         slider: w.slider,
+        zones: Vec::new(),
     };
     ui.reset();
     let result = match w.page {
         Page::Settings => ui.build(&w.settings, w.autostart, &w.devices),
         Page::Devices => ui.build_devices(&w.settings, &w.devices, &w.candidates),
+        Page::Stats => {
+            if let Some(data) = w.stats.as_mut() {
+                data.now = crate::stats::now();
+            }
+            match w.stats.as_ref() {
+                Some(data) => ui.build_stats(&w.settings, &w.devices, data, &w.stats_view),
+                None => Ok(0.0),
+            }
+        }
     };
+    w.zones = std::mem::take(&mut ui.zones);
     w.hits = std::mem::take(&mut ui.hits);
     w.list = std::mem::take(&mut ui.list);
     w.anims = std::mem::take(&mut ui.anims);
@@ -1017,15 +1072,54 @@ pub unsafe fn gallery_draw(
         anims: Anims::default(),
         hover: None,
         slider: None,
+        zones: Vec::new(),
     };
     ui.reset();
     let h = match page {
         Page::Settings => ui.build(s, true, devices),
         Page::Devices => ui.build_devices(s, devices, candidates),
+        Page::Stats => Ok(0.0),
     };
     ctx.SetTransform(&Matrix3x2::identity());
     h
 }
+
+/// A Statisztika oldal a képernyőképekhez, a megadott (szimulált) előzményekkel és
+/// rámutatással (tartalom koordinátákban).
+#[cfg(test)]
+pub unsafe fn gallery_draw_stats(
+    ctx: &ID2D1DeviceContext,
+    renderer: &IconRenderer,
+    devices: &[DeviceState],
+    log: std::collections::HashMap<String, Vec<crate::stats::Sample>>,
+    now: i64,
+    view: StatsView,
+    hover: Option<(f32, f32)>,
+    theme: Theme,
+) -> Result<f32> {
+    ctx.Clear(Some(&theme.window()));
+    let data = StatsData { log, loaded: std::time::Instant::now(), now, offset: 3600 };
+    let mut ui = Ui {
+        p: Painter { ctx, renderer },
+        theme,
+        accent: theme.accent(),
+        hits: Vec::new(),
+        scroll: 0.0,
+        drag: None,
+        list: (0.0, Vec::new()),
+        anims: Anims::default(),
+        hover,
+        slider: None,
+        zones: Vec::new(),
+    };
+    ui.reset();
+    let h = ui.build_stats(&Settings::default(), devices, &data, &view);
+    ctx.SetTransform(&Matrix3x2::identity());
+    h
+}
+
+#[cfg(test)]
+pub use stats_page::View as GalleryStatsView;
 
 #[cfg(test)]
 pub const GALLERY_W: f32 = W;
@@ -1177,6 +1271,12 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                         return;
                     }
                     w.hover = Some((x, y - w.scroll));
+                    // Grafikon fölött minden mozdulat újrarajzol (a leolvasott érték követi a kurzort).
+                    let in_zone = w.zones.iter().any(|r| contains(r, x, y));
+                    if in_zone || w.in_zone {
+                        w.in_zone = in_zone;
+                        let _ = InvalidateRect(hwnd, None, false);
+                    }
                     let hit = w.hits.iter().position(|(r, _)| contains(r, x, y));
                     if hit != w.hover_hit {
                         w.hover_hit = hit;
@@ -1232,6 +1332,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 WINDOW.with_borrow_mut(|w| {
                     if let Some(w) = w {
                         w.tracking = false;
+                        w.in_zone = false;
                         w.sb_hover = false;
                         w.hover = None;
                         w.hover_hit = None;

@@ -109,6 +109,11 @@ impl Theme {
         if self.light { rgb(0xDC2626, 1.0) } else { rgb(0xF87171, 1.0) }
     }
 
+    /// Figyelmeztető borostyán (pl. a 80%-os kapacitás vonala a Statisztikán).
+    pub fn amber(&self) -> D2D1_COLOR_F {
+        if self.light { rgb(0xB45309, 1.0) } else { rgb(0xFBBF24, 1.0) }
+    }
+
     pub fn alert_bg(&self) -> D2D1_COLOR_F {
         if self.light { rgb(0xDC2626, 0.08) } else { rgb(0xF87171, 0.12) }
     }

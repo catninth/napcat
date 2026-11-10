@@ -175,6 +175,95 @@ fn gallery() {
     }
 }
 
+/// Szimulált előzmények a Statisztika oldalhoz: az egér öt hónapja (egyre gyorsabban merül, ahogy
+/// kopik az akku), a billentyűzet és a kontroller néhány hete. Minden nap 9 és 23 óra között megy
+/// a gép; 15% alatt az eszköz töltőre kerül. Determinisztikus (saját álvéletlen).
+fn stats_log(now: i64) -> std::collections::HashMap<String, Vec<crate::stats::Sample>> {
+    use crate::stats::{Sample, NONE};
+    let offset = 3600;
+    let today = (now + offset).div_euclid(86400);
+    let mut seed = 12345u32;
+    let mut rnd = move || {
+        seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12345);
+        (seed >> 16) as f32 / 65536.0
+    };
+    let mut log = std::collections::HashMap::new();
+    for (id, days, rate, wear, charge, start) in
+        [("vgn", 150, 1.1, 0.075, 40.0, 78.0), ("rk", 40, 0.45, 0.0, 30.0, 62.0), ("ds4", 20, 6.5, 0.0, 45.0, 70.0)]
+    {
+        let mut v: Vec<Sample> = Vec::new();
+        let mut level: f32 = start;
+        let mut charging = false;
+        for d in (today - days)..=today {
+            let on = d * 86400 - offset + 9 * 3600;
+            let off = (d * 86400 - offset + 23 * 3600).min(now);
+            if on >= now {
+                break;
+            }
+            // Napi használat: a hétvégén és néhány napon több, máskor kevesebb.
+            let intensity = 0.6 + rnd() * 0.8;
+            let r = rate * intensity / (1.0 - wear * (days - (today - d)) as f32 / days as f32);
+            let mut last: Option<(u8, u8)> = None;
+            let mut t = on;
+            while t < off {
+                if charging {
+                    level += charge / 6.0;
+                    if level >= 100.0 {
+                        level = 100.0;
+                        charging = false;
+                    }
+                } else {
+                    level -= r / 6.0 * (0.7 + rnd() * 0.6);
+                    if level < 15.0 && rnd() < 0.3 {
+                        charging = true;
+                    }
+                    level = level.max(3.0);
+                }
+                let code = if charging { b'c' } else if level >= 100.0 { b'f' } else { b'd' };
+                let entry = (code, level as u8);
+                if last != Some(entry) {
+                    v.push(Sample { t, level: entry.1, code });
+                    last = Some(entry);
+                }
+                t += 600;
+            }
+            if off < now {
+                v.push(Sample { t: off, level: NONE, code: b'B' });
+            }
+        }
+        log.insert(id.to_string(), v);
+    }
+    log
+}
+
+/// A Statisztika oldal (sötét: 7 nap, rámutatással a töltöttség grafikonon; világos: 30 nap).
+#[test]
+#[ignore = "felülírja a docs/gallery képeit"]
+fn gallery_stats() {
+    crate::i18n::set("en");
+    let c = Canvas::new();
+    let devices = devices();
+    // 2026. nov. 10., kedd, 18:30 helyi idő (UTC+1).
+    let now = 20_767 * 86400 + 17 * 3600 + 1800;
+    for light in [false, true] {
+        let t = use_theme(light);
+        let view = settings_window::GalleryStatsView { dev: None, range: if light { 30 } else { 7 }, table: false };
+        // Péntek délután a töltöttség grafikonon.
+        let hover = (!light).then_some((300.0, 330.0));
+        unsafe {
+            let mut height = 0.0;
+            c.render(1.0, 1.0, 96.0, |ctx| {
+                height = settings_window::gallery_draw_stats(ctx, &c.renderer, &devices, stats_log(now), now, view.clone(), hover, t)?;
+                Ok(())
+            });
+            let bmp = c.render(settings_window::GALLERY_W, height, DPI, |ctx| {
+                settings_window::gallery_draw_stats(ctx, &c.renderer, &devices, stats_log(now), now, view.clone(), hover, t).map(|_| ())
+            });
+            c.save(&bmp, &out_dir("stats").join(format!("{}.png", if light { "light" } else { "dark" })));
+        }
+    }
+}
+
 /// A tálcaikon stílusok: soronként egy stílus, oszloponként egy eszközállapot, sötét és világos
 /// tálcán. A valódi 32 px-es (200%) ikonképek, kétszeresre nagyítva (pixelhűen).
 unsafe fn tray_styles(c: &Canvas) {

@@ -4,6 +4,7 @@ mod i18n;
 mod model;
 mod providers;
 mod settings;
+mod stats;
 mod ui;
 mod updater;
 mod worker;
