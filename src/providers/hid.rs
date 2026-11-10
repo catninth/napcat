@@ -25,6 +25,8 @@ pub struct HidInterface {
     pub usage_page: u16,
     pub usage: u16,
     pub input_len: u16,
+    /// Kimenő report hossza a report ID-vel együtt (0: nincs kimenő report).
+    pub output_len: u16,
     /// A leghosszabb feature report hossza a report ID-vel együtt (0: nincs feature report).
     pub feature_len: u16,
 }
@@ -33,6 +35,13 @@ impl HidInterface {
     /// Bluetooth Classic HID (HIDP szolgáltatás UUID az útvonalban).
     pub fn is_bluetooth(&self) -> bool {
         String::from_utf16_lossy(&self.path).to_ascii_lowercase().contains("00001124-0000-1000-8000-00805f9b34fb")
+    }
+
+    /// Az USB interfész száma az útvonalból ("...&mi_03&col01#..."); egyinterfészes eszköznél None.
+    pub fn interface_number(&self) -> Option<u8> {
+        let path = String::from_utf16_lossy(&self.path).to_ascii_lowercase();
+        let at = path.find("&mi_")? + 4;
+        u8::from_str_radix(path.get(at..at + 2)?, 16).ok()
     }
 }
 
@@ -153,6 +162,7 @@ unsafe fn info(path: &[u16], desc: Option<&str>) -> Option<HidInterface> {
         usage_page: caps.UsagePage,
         usage: caps.Usage,
         input_len: caps.InputReportByteLength,
+        output_len: caps.OutputReportByteLength,
         feature_len: caps.FeatureReportByteLength,
     })
 }

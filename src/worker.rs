@@ -32,6 +32,7 @@ use crate::providers::compx::Compx;
 use crate::providers::mchose::Mchose;
 use crate::providers::custom::Custom;
 use crate::providers::logitech_hidpp::LogitechHidpp;
+use crate::providers::steelseries::SteelSeries;
 use crate::providers::{playstation::PlayStation, wired_detect::WiredDetect, xinput::XInput, Provider};
 
 /// A UI ablaknak küldött üzenet: új állapotok várnak a csatornán.
@@ -151,6 +152,7 @@ unsafe fn run(hwnd: HWND, tx: Sender<DeviceState>) {
         Box::new(BtPnp::default()),
         Box::new(Compx::default()),
         Box::new(Mchose::default()),
+        Box::new(SteelSeries::default()),
         Box::new(Custom),
     ];
     // Mikor esedékes a következő időzített olvasás providerenként (None: csak eseményre).

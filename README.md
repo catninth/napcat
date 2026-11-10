@@ -70,7 +70,9 @@ capture details.
 | Xbox controllers (XInput, approximate level) | done, untested on hardware |
 | Logitech HID++ 2.0 (Unifying, Bolt, Lightspeed, wired) | done, untested on hardware |
 | Bluetooth battery (Windows battery property) | done, untested on hardware |
-| Headsets (other than Logitech), Razer, BLE GATT | planned |
+| SteelSeries headsets (Arctis Nova 7 / 7 Gen 2 / 7X / 7P, Nova 5, Nova 3P/3X Wireless, Nova Pro Wireless, Arctis 7+, Arctis 1/7/9, Pro Wireless, GameBuds) | done, untested on hardware |
+| SteelSeries mice (Aerox 3/5/9 Wireless, Prime Wireless, Prime Mini Wireless, Rival 3 Wireless, Rival 650; cable and receiver) | done, untested on hardware |
+| Other headsets, Razer, BLE GATT | planned |
 
 ## Building
 
