@@ -1,0 +1,47 @@
+# Build minden pushra és kézi indításra: release build, tesztek, Inno Setup telepítő.
+# Az exe és a telepítő a futás artifactja lesz; GitHub Release nem készül (azt a release.yml csinálja).
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Version
+        id: version
+        shell: pwsh
+        run: |
+          $cargo = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches.Groups[1].Value
+          "version=$cargo" >> $env:GITHUB_OUTPUT
+
+      - name: Build
+        run: cargo build --release --locked -p napcat
+
+      - name: Test
+        run: cargo test --release --locked -p napcat
+
+      - name: Installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup -y --no-progress
+          }
+          & $iscc /DAppVersion=${{ steps.version.outputs.version }} installer\napcat.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC hiba: $LASTEXITCODE" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NapCat-${{ steps.version.outputs.version }}-${{ github.sha }}
+          path: |
+            target/release/napcat.exe
+            target/installer/NapCat-Setup-*.exe
