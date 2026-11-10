@@ -9,3 +9,6 @@ pub mod theme;
 pub mod toast;
 pub mod tooltip;
 pub mod tray;
+
+#[cfg(test)]
+mod gallery;

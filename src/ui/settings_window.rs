@@ -899,6 +899,42 @@ unsafe fn paint(w: &mut Window) -> Result<()> {
     Ok(())
 }
 
+/// Egy oldal teljes tartalma a képernyőképekhez (ugyanaz a rajzoló, mint az ablaké, görgetés és
+/// rámutatás nélkül); a tartalom magasságát adja vissza DIP-ben.
+#[cfg(test)]
+pub unsafe fn gallery_draw(
+    ctx: &ID2D1DeviceContext,
+    renderer: &IconRenderer,
+    page: Page,
+    s: &Settings,
+    devices: &[DeviceState],
+    candidates: &[Candidate],
+    theme: Theme,
+) -> Result<f32> {
+    ctx.Clear(Some(&theme.window()));
+    let mut ui = Ui {
+        p: Painter { ctx, renderer },
+        theme,
+        accent: theme.accent(),
+        hits: Vec::new(),
+        scroll: 0.0,
+        drag: None,
+        list: (0.0, Vec::new()),
+        anims: Anims::default(),
+        hover: None,
+        slider: None,
+    };
+    ui.reset();
+    let h = match page {
+        Page::Settings => ui.build(s, true, devices),
+        Page::Devices => ui.build_devices(s, devices, candidates),
+    };
+    ctx.SetTransform(&Matrix3x2::identity());
+    h
+}
+
+#[cfg(test)]
+pub const GALLERY_W: f32 = W;
 
 fn client_h(w: &Window) -> f32 {
     let mut rc = RECT::default();

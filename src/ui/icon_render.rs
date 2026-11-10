@@ -213,7 +213,7 @@ impl IconRenderer {
     }
 
     /// Premultiplied BGRA pixelek, soronként size*4 bájt.
-    fn render_pixels(&self, dev: &DeviceState, size: u32, theme: Theme) -> Result<Vec<u8>> {
+    pub(crate) fn render_pixels(&self, dev: &DeviceState, size: u32, theme: Theme) -> Result<Vec<u8>> {
         unsafe {
             let bmp = self.wic.CreateBitmap(size, size, &GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand)?;
             let props = D2D1_RENDER_TARGET_PROPERTIES {
