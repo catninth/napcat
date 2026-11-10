@@ -23,7 +23,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use super::anim::{self, fade, mix, Anims};
 use super::draw::{contains, rect, Painter};
-use super::icon_render::{IconRenderer, Layout};
+use super::icon_render::{AppIcon, IconRenderer, Layout};
 use super::theme::{self, rgb, Theme};
 use crate::model::{ChargeState, DeviceKind, DeviceState};
 use crate::providers::custom::{self, Candidate};
@@ -133,6 +133,8 @@ struct Window {
     /// A kurzor alatti kattintható elem indexe (változáskor újrarajzolás).
     hover_hit: Option<usize>,
     tracking: bool,
+    /// A címsor és a tálcagomb ikonjának állapota (változáskor újrarajzolva); None: még nincs.
+    icon_style: Option<AppIcon>,
 }
 
 thread_local! {
@@ -222,9 +224,9 @@ unsafe fn create(owner: HWND, devices: Vec<DeviceState>, page: Page) -> Result<(
         hover: None,
         hover_hit: None,
         tracking: false,
+        icon_style: None,
     }));
     apply_frame(hwnd);
-    set_window_icons(hwnd, dpi);
     place(hwnd, dpi);
     WINDOW.with_borrow_mut(|w| {
         if let Some(w) = w {
@@ -237,13 +239,12 @@ unsafe fn create(owner: HWND, devices: Vec<DeviceState>, page: Page) -> Result<(
 }
 
 /// Címsor és tálcagomb ikon: az app ikon a pontos méretben rajzolva (a .ico kicsinyítése helyett),
-/// így 16-24 px-en is látszik a macska és a "zz".
-unsafe fn set_window_icons(hwnd: HWND, dpi: f32) {
+/// így 16-24 px-en is látszik a macska és a "zz"; az állapot (sötét, világos, feltöltve) szerint.
+unsafe fn set_window_icons(hwnd: HWND, dpi: f32, style: AppIcon) {
     let Ok(renderer) = IconRenderer::new() else { return };
-    let accent = rgb(0x4CC2FF, 1.0);
     for (which, metric) in [(ICON_SMALL, SM_CXSMICON), (ICON_BIG, SM_CXICON)] {
         let size = GetSystemMetricsForDpi(metric, dpi as u32) as u32;
-        if let Ok(icon) = renderer.render_app_icon(size, accent) {
+        if let Ok(icon) = renderer.render_app_icon(size, style) {
             let old = SendMessageW(hwnd, WM_SETICON, WPARAM(which as usize), LPARAM(icon.0 as isize));
             if old.0 != 0 {
                 let _ = DestroyIcon(HICON(old.0 as *mut c_void));
@@ -844,6 +845,12 @@ unsafe fn paint(w: &mut Window) -> Result<()> {
     rt.SetDpi(w.dpi, w.dpi);
     let ctx: ID2D1DeviceContext = rt.cast()?;
     let theme = Theme::ui();
+    // Címsor és tálcagomb ikon: téma vagy "feltöltve" állapot változásakor újra.
+    let style = AppIcon::current(theme.light);
+    if w.icon_style != Some(style) {
+        set_window_icons(w.hwnd, w.dpi, style);
+        w.icon_style = Some(style);
+    }
     ctx.BeginDraw();
     ctx.Clear(Some(&theme.window()));
     // A görgetést egy eltolással kezeljük; a rajzoló segédek a jelenlegi transzformációra rajzolnak.
@@ -1038,6 +1045,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 WINDOW.with_borrow_mut(|w| {
                     if let Some(w) = w {
                         w.dpi = (wparam.0 & 0xFFFF) as f32;
+                        w.icon_style = None;
                     }
                 });
                 let _ = SetWindowPos(hwnd, None, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);

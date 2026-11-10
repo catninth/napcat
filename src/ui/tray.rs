@@ -28,7 +28,7 @@ use super::flyout;
 use super::toast::{self, WM_TOAST};
 use super::tooltip;
 use super::settings_window;
-use super::icon_render::{IconRenderer, Layout};
+use super::icon_render::{AppIcon, IconRenderer, Layout};
 use super::theme::{self, Theme};
 use crate::model::{ChargeState, DeviceKind, DeviceState};
 use crate::providers::custom;
@@ -701,6 +701,8 @@ unsafe fn on_devices(hwnd: HWND) {
         app.last_update = Some(std::time::Instant::now());
         (app.active_states(), app.device_states())
     });
+    // Az app ikon "feltöltve" (zöld) állapota a panel és a beállítások logójához.
+    AppIcon::update_charged(&states.0);
     flyout::update(&states.0, Some(0));
     settings_window::update_devices(&states.1);
 }
@@ -898,6 +900,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                     (app.active_states(), app.device_states())
                 });
                 // Eltávolított vagy törölt eszköz: a panel és az ablak listája is frissül.
+                AppIcon::update_charged(&states.0);
                 flyout::update(&states.0, None);
                 settings_window::update_devices(&states.1);
                 LRESULT(0)

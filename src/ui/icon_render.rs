@@ -48,6 +48,50 @@ impl Layout {
     }
 }
 
+/// Az app ikon állapotai a "NapCat app ikon" design szerint.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AppIcon {
+    /// Sötét csempe, kék gyűrű (alap; az exe és a telepítő ikonja).
+    Dark,
+    /// Világos csempe, mélyebb kék gyűrű, sötét macska (világos témában).
+    Light,
+    /// Sötét csempe, zöld gyűrű és "zz": minden csatlakoztatott eszköz feltöltve.
+    Charged,
+}
+
+/// Minden ismert szintű, csatlakoztatott eszköz tele van (a tálca frissíti).
+static CHARGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+impl AppIcon {
+    /// (csempe, keret, gyűrű és "zz", fej); a szemek a csempe színével.
+    fn palette(self) -> (D2D1_COLOR_F, D2D1_COLOR_F, D2D1_COLOR_F, D2D1_COLOR_F) {
+        match self {
+            AppIcon::Dark => (rgb(0x17181C, 1.0), rgb(0xFFFFFF, 0.1), rgb(0x4CC2FF, 1.0), rgb(0xF2F2F3, 1.0)),
+            AppIcon::Light => (rgb(0xF4F5F7, 1.0), rgb(0x000000, 0.08), rgb(0x0A84D6, 1.0), rgb(0x1C1D21, 1.0)),
+            AppIcon::Charged => (rgb(0x17181C, 1.0), rgb(0xFFFFFF, 0.1), rgb(0x4ADE80, 1.0), rgb(0xF2F2F3, 1.0)),
+        }
+    }
+
+    /// A jelenlegi állapot: feltöltve, ha minden eszköz tele van; különben a téma szerint.
+    pub fn current(light: bool) -> AppIcon {
+        if CHARGED.load(std::sync::atomic::Ordering::Relaxed) {
+            AppIcon::Charged
+        } else if light {
+            AppIcon::Light
+        } else {
+            AppIcon::Dark
+        }
+    }
+
+    /// A "feltöltve" állapot az eszközök alapján: van ismert szintű vagy töltő, csatlakoztatott
+    /// eszköz, és mind tele van (ami még tölt, ismeretlen szinttel is, kizárja).
+    pub fn update_charged(devices: &[DeviceState]) {
+        let mut known = devices.iter().filter(|d| d.connected && (d.level.is_some() || d.is_charging())).peekable();
+        let charged = known.peek().is_some() && known.all(|d| d.charge == crate::model::ChargeState::Full || d.level == Some(100));
+        CHARGED.store(charged, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 pub struct IconRenderer {
     d2d: ID2D1Factory1,
     wic: IWICImagingFactory,
@@ -124,13 +168,13 @@ impl IconRenderer {
     /// négyzet, 75%-os kiemelő színű gyűrű, alvó macska csukott szemmel, "zz" a gyűrű résében.
     /// Minden méretben ugyanaz a rajz; a vékony vonalak kis méretben is legalább ~1 px-esek maradnak,
     /// hogy a szemek és a "zz" ne tűnjenek el.
-    pub unsafe fn draw_app_icon(&self, rt: &ID2D1DeviceContext, s: f32, accent: D2D1_COLOR_F) -> Result<()> {
+    pub unsafe fn draw_app_icon(&self, rt: &ID2D1DeviceContext, s: f32, style: AppIcon) -> Result<()> {
         let k = s / 100.0;
         let px = |units: f32, min_px: f32| (units * k).max(min_px);
-        let (bg, head) = (rgb(0x17181C, 1.0), rgb(0xF2F2F3, 1.0));
+        let (bg, border, accent, head) = style.palette();
         let tile = D2D1_ROUNDED_RECT { rect: D2D_RECT_F { left: k, top: k, right: 99.0 * k, bottom: 99.0 * k }, radiusX: 23.0 * k, radiusY: 23.0 * k };
         rt.FillRoundedRectangle(&tile, &rt.CreateSolidColorBrush(&bg, None)?);
-        rt.DrawRoundedRectangle(&tile, &rt.CreateSolidColorBrush(&rgb(0xFFFFFF, 0.1), None)?, px(1.0, 0.5), None);
+        rt.DrawRoundedRectangle(&tile, &rt.CreateSolidColorBrush(&border, None)?, px(1.0, 0.5), None);
         let accent_brush = rt.CreateSolidColorBrush(&accent, None)?;
         self.arc(rt, 50.0 * k, 30.0 * k, px(8.0, 1.5), 0.75, &accent_brush)?;
         // A macska a (50, 53) középpontra, 0,8-szoros méretben.
@@ -145,8 +189,8 @@ impl IconRenderer {
     }
 
     /// Az app ikon HICON-ként (pl. ablak címsorához), `size` px-ben élesen rajzolva.
-    pub fn render_app_icon(&self, size: u32, accent: D2D1_COLOR_F) -> Result<HICON> {
-        unsafe { to_hicon(&self.render_with(size, |rt, s| self.draw_app_icon(rt, s, accent))?, size) }
+    pub fn render_app_icon(&self, size: u32, style: AppIcon) -> Result<HICON> {
+        unsafe { to_hicon(&self.render_with(size, |rt, s| self.draw_app_icon(rt, s, style))?, size) }
     }
 
     /// Rajzolás egy `size` méretű átlátszó bitképre; premultiplied BGRA pixelek.
@@ -662,6 +706,51 @@ mod tests {
         }
     }
 
+    /// Az app ikon állapotai (sötét, világos, feltöltve) soronként, 128-tól 16 px-ig, a design
+    /// sötét hátterén. Kimenet: target/app-icon-states.png.
+    #[test]
+    fn app_icon_states() {
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            let r = IconRenderer::new().unwrap();
+            let sizes = [128u32, 64, 48, 32, 24, 16];
+            let (w, h) = (sizes.iter().sum::<u32>() + 24 * sizes.len() as u32 + 24, 3 * 152);
+            let sheet = r.wic.CreateBitmap(w, h, &GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand).unwrap();
+            let props = D2D1_RENDER_TARGET_PROPERTIES {
+                pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
+                ..Default::default()
+            };
+            let rt: ID2D1DeviceContext = r.d2d.CreateWicBitmapRenderTarget(&sheet, &props).unwrap().cast().unwrap();
+            rt.BeginDraw();
+            rt.Clear(Some(&rgb(0x0F1115, 1.0)));
+            for (row, style) in [AppIcon::Dark, AppIcon::Light, AppIcon::Charged].into_iter().enumerate() {
+                let mut x = 24.0;
+                for size in sizes {
+                    let y = row as f32 * 152.0 + 12.0 + (128 - size) as f32;
+                    rt.SetTransform(&windows::Foundation::Numerics::Matrix3x2::translation(x, y));
+                    r.draw_app_icon(&rt, size as f32, style).unwrap();
+                    x += size as f32 + 24.0;
+                }
+            }
+            rt.EndDraw(None, None).unwrap();
+            save_png(&r.wic, &sheet, concat!(env!("CARGO_MANIFEST_DIR"), "\\target\\app-icon-states.png"));
+        }
+    }
+
+    #[test]
+    fn charged_state() {
+        let dev = |level, charge| DeviceState { level: Some(level), charge, connected: true, ..DeviceState::disconnected("x", "x", DeviceKind::Mouse) };
+        AppIcon::update_charged(&[dev(100, crate::model::ChargeState::Full), dev(100, crate::model::ChargeState::Charging)]);
+        assert_eq!(AppIcon::current(false), AppIcon::Charged);
+        AppIcon::update_charged(&[dev(100, crate::model::ChargeState::Full), dev(50, crate::model::ChargeState::Discharging)]);
+        assert_eq!(AppIcon::current(true), AppIcon::Light);
+        let charging_unknown = DeviceState { level: None, ..dev(0, crate::model::ChargeState::Charging) };
+        AppIcon::update_charged(&[dev(100, crate::model::ChargeState::Full), charging_unknown]);
+        assert_eq!(AppIcon::current(false), AppIcon::Dark);
+        AppIcon::update_charged(&[]);
+        assert_eq!(AppIcon::current(false), AppIcon::Dark);
+    }
+
     /// Az alkalmazás ikonja (exe, telepítő, Start menü) a "NapCat app ikon" design szerint.
     /// Újragenerálás: `cargo test app_icon -- --ignored`, kimenet: res/napcat.ico.
     #[test]
@@ -680,7 +769,7 @@ mod tests {
                 let rt: ID2D1DeviceContext = r.d2d.CreateWicBitmapRenderTarget(&bmp, &props).unwrap().cast().unwrap();
                 rt.BeginDraw();
                 rt.Clear(Some(&rgb(0, 0.0)));
-                r.draw_app_icon(&rt, size as f32, rgb(0x4CC2FF, 1.0)).unwrap();
+                r.draw_app_icon(&rt, size as f32, AppIcon::Dark).unwrap();
                 rt.EndDraw(None, None).unwrap();
                 let path = format!("{}\\target\\app-icon-{size}.png", env!("CARGO_MANIFEST_DIR"));
                 save_png(&r.wic, &bmp, &path);
