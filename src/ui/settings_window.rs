@@ -18,9 +18,10 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::ProcessStatus::K32EmptyWorkingSet;
 use windows::Win32::System::Threading::GetCurrentProcess;
 use windows::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow, GetSystemMetricsForDpi};
-use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture, VK_ESCAPE};
+use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_ESCAPE};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
+use super::anim::{self, fade, mix, Anims};
 use super::draw::{contains, rect, Painter};
 use super::icon_render::{IconRenderer, Layout};
 use super::theme::{self, rgb, Theme};
@@ -35,6 +36,12 @@ const W: f32 = 720.0;
 const MARGIN: f32 = 32.0;
 const SECTION_GAP: f32 = 26.0;
 const ROW_GAP: f32 = 4.0;
+/// Az eszközlista sorainak távolsága (sor + köz).
+const PITCH: f32 = 52.0 + ROW_GAP;
+/// Animációs képkocka időzítő.
+const ANIM_TIMER: usize = 1;
+/// A kurzor elhagyta az ablakot (TrackMouseEvent); a windows crate a Controls modulban tartja.
+const WM_MOUSELEAVE: u32 = 0x02A3;
 
 const SWATCHES: [(&str, u32); 7] = [
     ("Égkék", 0x4CC2FF),
@@ -46,7 +53,7 @@ const SWATCHES: [(&str, u32); 7] = [
     ("Türkiz", 0x2DD4BF),
 ];
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 enum Act {
     Startup,
     TrayMode(&'static str),
@@ -90,7 +97,7 @@ fn kind_label(k: DeviceKind) -> &'static str {
 }
 
 /// Az ablak oldalai.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Page {
     Settings,
     Devices,
@@ -114,10 +121,16 @@ struct Window {
     hits: Vec<(D2D_RECT_F, Act)>,
     /// A küszöb csúszka húzása közben a csúszka sávja (tartalom koordinátákban).
     dragging: Option<D2D_RECT_F>,
-    /// Az átrendezéshez húzott eszköz és a kurzor y-ja.
-    drag_device: Option<(String, f32)>,
-    /// A tálca eszközlistájának sorai az utolsó rajzolásból (id, felső y).
-    rows: Vec<(String, f32)>,
+    /// Az átrendezéshez húzott eszköz, a kurzor y-ja és a megfogás helye a soron belül.
+    drag_device: Option<(String, f32, f32)>,
+    /// A tálca eszközlistája az utolsó rajzolásból: felső y és az eszközök sorrendben.
+    list: (f32, Vec<String>),
+    anims: Anims,
+    /// A kurzor helye (kliens DIP), a rámutatás kiemeléséhez.
+    hover: Option<(f32, f32)>,
+    /// A kurzor alatti kattintható elem indexe (változáskor újrarajzolás).
+    hover_hit: Option<usize>,
+    tracking: bool,
 }
 
 thread_local! {
@@ -142,6 +155,8 @@ pub unsafe fn open(owner: HWND, devices: Vec<DeviceState>, page: Page) {
 unsafe fn set_page(w: &mut Window, page: Page) {
     w.page = page;
     w.scroll = 0.0;
+    // Az új oldal beúszik.
+    w.anims.set("page", 0.0);
     w.candidates = candidates_for(&w.devices);
     let title = if page == Page::Devices { w!("NapCat – Eszközök") } else { w!("NapCat – Beállítások") };
     let _ = SetWindowTextW(w.hwnd, title);
@@ -199,7 +214,11 @@ unsafe fn create(owner: HWND, devices: Vec<DeviceState>, page: Page) -> Result<(
         hits: Vec::new(),
         dragging: None,
         drag_device: None,
-        rows: Vec::new(),
+        list: (0.0, Vec::new()),
+        anims: Anims::default(),
+        hover: None,
+        hover_hit: None,
+        tracking: false,
     }));
     apply_frame(hwnd);
     set_window_icons(hwnd, dpi);
@@ -338,14 +357,18 @@ unsafe fn on_act(w: &mut Window, act: Act) {
     changed(w);
 }
 
+/// A húzott sor helye a listában a sor teteje (`top`) szerint: a legközelebbi hely, 0..n-1.
+fn drag_index(list_top: f32, n: usize, top: f32) -> usize {
+    (((top - list_top) / PITCH).round().max(0.0) as usize).min(n.saturating_sub(1))
+}
+
 /// Az átrendezés befejezése: a húzott eszköz a kurzor alatti helyre kerül; az új sorrend mentődik.
-unsafe fn drop_device(w: &mut Window, id: &str, drag_y: f32) {
-    let mut ids: Vec<String> = w.rows.iter().map(|(i, _)| i.clone()).collect();
-    let target = w.rows.iter().filter(|(_, top)| top + 26.0 < drag_y).count();
+unsafe fn drop_device(w: &mut Window, id: &str, top: f32) {
+    let (list_top, mut ids) = w.list.clone();
+    let to = drag_index(list_top, ids.len(), top);
     let Some(from) = ids.iter().position(|i| i == id) else { return };
     let moved = ids.remove(from);
-    let to = if target > from { target - 1 } else { target }.min(ids.len());
-    ids.insert(to, moved);
+    ids.insert(to.min(ids.len()), moved);
     // A teljes sorrend: a lista, utána a többi ismert eszköz (pl. eltávolítottak) változatlanul.
     for d in &w.devices {
         if !ids.contains(&d.id) {
@@ -385,13 +408,22 @@ struct Ui<'a> {
     hits: Vec<(D2D_RECT_F, Act)>,
     /// Görgetés: minden rajz ennyivel feljebb kerül.
     scroll: f32,
-    /// Éppen húzott eszköz és a kurzor y-ja (tartalom koordinátákban).
-    drag: Option<(String, f32)>,
-    /// A tálca eszközlistájának sorai (id, felső y): a húzás célhelyéhez.
-    rows: Vec<(String, f32)>,
+    /// Éppen húzott eszköz, a kurzor y-ja és a megfogás helye (tartalom koordinátákban).
+    drag: Option<(String, f32, f32)>,
+    /// A tálca eszközlistája: felső y és az eszközök sorrendben (a húzás célhelyéhez).
+    list: (f32, Vec<String>),
+    anims: Anims,
+    /// A kurzor helye tartalom koordinátákban.
+    hover: Option<(f32, f32)>,
 }
 
 impl Ui<'_> {
+    /// Rámutatás kiemelés (0..1) egy elemhez, simán be- és kiúszva.
+    fn hover_anim(&mut self, key: &str, r: &D2D_RECT_F) -> f32 {
+        let on = self.hover.is_some_and(|(x, y)| contains(r, x, y));
+        self.anims.get(&format!("hover{key}"), on as u8 as f32, 120)
+    }
+
     /// Rajzolás (x, y) eltolással, a görgetést is figyelembe véve.
     unsafe fn at(&self, x: f32, y: f32) {
         self.p.ctx.SetTransform(&Matrix3x2::translation(x, y - self.scroll));
@@ -425,16 +457,22 @@ impl Ui<'_> {
     }
 
     /// Kapcsoló a jobb szélen (40x20, a design szerint), 56x44-es kattintható területtel.
+    /// A gomb átcsúszik, a sáv színe átúszik; rámutatáskor a gomb kicsit nagyobb.
     unsafe fn switch(&mut self, right: f32, cy: f32, on: bool, act: Act) -> Result<()> {
         let r = rect(right - 48.0, cy - 10.0, 40.0, 20.0);
-        if on {
-            self.p.fill(r, 10.0, self.accent)?;
-            self.p.circle(r.right - 10.0, cy, 6.0, self.theme.on_accent())?;
-        } else {
-            self.p.stroke(r, 10.0, 1.0, self.theme.control_border())?;
-            self.p.circle(r.left + 10.0, cy, 6.0, self.theme.knob_off())?;
+        let hit = rect(right - 56.0, cy - 22.0, 56.0, 44.0);
+        let key = format!("{act:?}");
+        let v = self.anims.get(&format!("switch{key}"), on as u8 as f32, 160);
+        let h = self.hover_anim(&key, &hit);
+        if v < 1.0 {
+            self.p.stroke(r, 10.0, 1.0, fade(self.theme.control_border(), 1.0 - v))?;
         }
-        self.hits.push((rect(right - 56.0, cy - 22.0, 56.0, 44.0), act));
+        if v > 0.0 {
+            self.p.fill(r, 10.0, fade(self.accent, v))?;
+        }
+        let knob = mix(self.theme.knob_off(), self.theme.on_accent(), v);
+        self.p.circle(r.left + 10.0 + 20.0 * v, cy, 6.0 + h, knob)?;
+        self.hits.push((hit, act));
         Ok(())
     }
 
@@ -445,29 +483,48 @@ impl Ui<'_> {
         let mut x = right - 16.0 - total;
         self.p.fill(rect(x, cy - 20.0, total, 40.0), 8.0, self.theme.window())?;
         x += 3.0;
-        for ((key, label), w) in options.iter().zip(widths) {
-            let r = rect(x, cy - 17.0, w, 34.0);
+        let mut rects = Vec::new();
+        for w in widths {
+            rects.push(rect(x, cy - 17.0, w, 34.0));
+            x += w + 2.0;
+        }
+        // A kijelölés átcsúszik az új opcióra (helye és szélessége is animál).
+        let group = format!("{:?}", act(options[0].0));
+        if let Some(r) = options.iter().position(|(k, _)| *k == selected).map(|i| rects[i]) {
+            let sx = self.anims.get(&format!("seg-x{group}"), r.left, 200);
+            let sw = self.anims.get(&format!("seg-w{group}"), r.right - r.left, 200);
+            self.p.fill(rect(sx, r.top, sw, 34.0), 6.0, self.theme.segment_selected())?;
+        }
+        for (i, ((key, label), r)) in options.iter().zip(rects).enumerate() {
             let sel = *key == selected;
-            if sel {
-                self.p.fill(r, 6.0, self.theme.segment_selected())?;
+            let h = self.hover_anim(&format!("{group}{i}"), &r);
+            if h > 0.0 && !sel {
+                self.p.fill(r, 6.0, self.theme.fg(0.05 * h))?;
             }
-            let color = if sel { self.theme.fg(1.0) } else { self.theme.sub() };
+            let t = self.anims.get(&format!("seg-t{group}{i}"), sel as u8 as f32, 200);
+            let color = mix(self.theme.sub(), self.theme.fg(1.0), t);
             self.p.text(label, 12.5, DWRITE_FONT_WEIGHT_MEDIUM, r, color, DWRITE_TEXT_ALIGNMENT_CENTER)?;
             self.hits.push((r, act(key)));
-            x += w + 2.0;
         }
         Ok(())
     }
 
     unsafe fn radio(&mut self, x: f32, y: f32, label: &str, hint: &str, on: bool, act: Act) -> Result<()> {
         let (cx, cy) = (x + 9.0, y + 22.0);
+        let hit = rect(x, y, 560.0, 44.0);
+        let key = format!("{act:?}");
+        let v = self.anims.get(&format!("radio{key}"), on as u8 as f32, 160);
+        let h = self.hover_anim(&key, &hit);
+        if h > 0.0 {
+            self.p.circle(cx, cy, 14.0, self.theme.fg(0.06 * h))?;
+        }
         let ring = D2D1_ELLIPSE { point: D2D_POINT_2F { x: cx, y: cy }, radiusX: 0.0, radiusY: 0.0 };
-        let (width, color) = if on { (5.0, self.accent) } else { (2.0, self.theme.control_border()) };
+        let (width, color) = (2.0 + 3.0 * v, mix(self.theme.control_border(), self.accent, v));
         let e = D2D1_ELLIPSE { radiusX: 9.0 - width / 2.0, radiusY: 9.0 - width / 2.0, ..ring };
         self.p.ctx.DrawEllipse(&e, &self.p.brush(&color)?, width, None);
         self.p.text(label, 13.5, DWRITE_FONT_WEIGHT_NORMAL, rect(x + 30.0, y + 4.0, 500.0, 20.0), self.theme.fg(1.0), DWRITE_TEXT_ALIGNMENT_LEADING)?;
         self.p.text(hint, 12.0, DWRITE_FONT_WEIGHT_NORMAL, rect(x + 30.0, y + 23.0, 500.0, 18.0), self.theme.sub(), DWRITE_TEXT_ALIGNMENT_LEADING)?;
-        self.hits.push((rect(x, y, 560.0, 44.0), act));
+        self.hits.push((hit, act));
         Ok(())
     }
 
@@ -477,6 +534,10 @@ impl Ui<'_> {
         let r = rect(right - 16.0 - w, cy - 16.0, w, 32.0);
         let (bg, fg) = if primary { (self.accent, self.theme.on_accent()) } else { (self.theme.segment_selected(), self.theme.fg(1.0)) };
         self.p.fill(r, 6.0, bg)?;
+        let h = self.hover_anim(&format!("{act:?}"), &r);
+        if h > 0.0 {
+            self.p.fill(r, 6.0, self.theme.fg(0.08 * h))?;
+        }
         self.p.text(label, 12.5, DWRITE_FONT_WEIGHT_MEDIUM, r, fg, DWRITE_TEXT_ALIGNMENT_CENTER)?;
         self.hits.push((r, act));
         Ok(())
@@ -493,6 +554,35 @@ impl Ui<'_> {
         let cy = *y + 26.0;
         *y += 52.0 + ROW_GAP;
         Ok(cy)
+    }
+
+    /// A tálca eszközlistájának egy sora `y`-on: fogantyú, gyűrűs ikon, név, kapcsoló.
+    /// A húzott (`lifted`) sor kiemelt háttérrel és árnyékkal "felemelkedik".
+    unsafe fn list_row(&mut self, d: &DeviceState, y: f32, lifted: bool, s: &Settings) -> Result<()> {
+        let l = self.anims.get(&format!("lift{}", d.id), lifted as u8 as f32, 140);
+        let r = rect(MARGIN, y, W - 2.0 * MARGIN, 52.0);
+        if l > 0.0 {
+            for (grow, alpha) in [(8.0, 0.05), (4.0, 0.08), (1.0, 0.10)] {
+                self.p.fill(rect(r.left - grow, y - grow + 4.0, r.right - r.left + 2.0 * grow, 52.0 + 2.0 * grow), 8.0 + grow, rgb(0, alpha * l))?;
+            }
+        }
+        let bg = mix(self.theme.row(), self.theme.segment_selected(), l);
+        self.p.fill(r, 8.0, bg)?;
+        // Fogantyú (hat pötty): ennél fogva húzható a sor.
+        let handle = rect(MARGIN, y, 30.0, 52.0);
+        let h = self.hover_anim(&format!("handle{}", d.id), &handle).max(l);
+        let dots = mix(self.theme.control_border(), self.theme.fg(1.0), h * 0.6);
+        for (dx, dy) in [(0.0, 0.0), (6.0, 0.0), (0.0, 5.0), (6.0, 5.0), (0.0, 10.0), (6.0, 10.0)] {
+            self.p.circle(MARGIN + 13.0 + dx, y + 21.0 + dy, 1.4, dots)?;
+        }
+        self.hits.push((handle, Act::Drag(d.id.clone())));
+        self.at(MARGIN + 32.0, y + 10.0);
+        self.p.renderer.draw(self.p.ctx, d, 32.0, self.theme, Layout::Ring, Some(bg))?;
+        self.reset();
+        let (fg, sub) = (self.theme.fg(1.0), self.theme.sub());
+        self.p.text(&d.name, 13.5, DWRITE_FONT_WEIGHT_NORMAL, rect(MARGIN + 78.0, y + 8.0, 420.0, 20.0), fg, DWRITE_TEXT_ALIGNMENT_LEADING)?;
+        self.p.text(device_conn(d), 12.0, DWRITE_FONT_WEIGHT_NORMAL, rect(MARGIN + 78.0, y + 27.0, 420.0, 18.0), sub, DWRITE_TEXT_ALIGNMENT_LEADING)?;
+        self.switch(W - MARGIN, y + 26.0, !s.hidden.contains(&d.id), Act::Device(d.id.clone()))
     }
 
     /// Az Eszközök oldal: a NapCat eszközei (eltávolítás), és a Windows által észlelt, még nem
@@ -594,12 +684,16 @@ impl Ui<'_> {
                 let mut sx = x + 30.0;
                 for (_, hex) in SWATCHES {
                     let (cx, cy) = (sx + 22.0, by + 25.0);
-                    if s.custom_accent == Some(hex) {
-                        self.p.circle(cx, cy, 19.0, fg)?;
-                        self.p.circle(cx, cy, 17.0, self.theme.row())?;
+                    let hit = rect(sx, by + 3.0, 44.0, 44.0);
+                    // A kijelölő gyűrű kinyílik; rámutatáskor a minta kicsit nagyobb.
+                    let v = self.anims.get(&format!("swatch{hex}"), (s.custom_accent == Some(hex)) as u8 as f32, 180);
+                    let h = self.hover_anim(&format!("swatch{hex}"), &hit);
+                    if v > 0.0 {
+                        self.p.circle(cx, cy, 15.0 + 4.0 * v, fade(fg, v))?;
+                        self.p.circle(cx, cy, 15.0 + 2.0 * v, self.theme.row())?;
                     }
-                    self.p.circle(cx, cy, 15.0, rgb(hex, 1.0))?;
-                    self.hits.push((rect(sx, by + 3.0, 44.0, 44.0), Act::Swatch(hex)));
+                    self.p.circle(cx, cy, 15.0 + h * (1.0 - v), rgb(hex, 1.0))?;
+                    self.hits.push((hit, Act::Swatch(hex)));
                     sx += 50.0;
                 }
                 by += 50.0;
@@ -638,31 +732,31 @@ impl Ui<'_> {
         if shown.is_empty() {
             self.row(&mut y, "Még nincs ismert eszköz", None)?;
         }
+        // Húzás közben a húzott sor a kurzort követi, a többi félrecsúszik a helye elől;
+        // elengedéskor a húzott sor a helyére úszik.
         let list_top = y;
-        for d in shown {
-            let dragged = self.drag.as_ref().is_some_and(|(id, _)| *id == d.id);
-            let bg = if dragged { self.theme.segment_selected() } else { self.theme.row() };
-            self.p.fill(rect(MARGIN, y, W - 2.0 * MARGIN, 52.0), 8.0, bg)?;
-            // Fogantyú (hat pötty): ennél fogva húzható a sor.
-            for (dx, dy) in [(0.0, 0.0), (6.0, 0.0), (0.0, 5.0), (6.0, 5.0), (0.0, 10.0), (6.0, 10.0)] {
-                self.p.circle(MARGIN + 13.0 + dx, y + 21.0 + dy, 1.4, self.theme.control_border())?;
+        let drag = self.drag.clone();
+        let target = drag.as_ref().map(|(_, cy, off)| drag_index(list_top, shown.len(), cy - off));
+        let mut slot = 0;
+        let mut lifted = None;
+        for d in &shown {
+            if let Some((_, cy, off)) = drag.as_ref().filter(|(id, _, _)| *id == d.id) {
+                lifted = Some((*d, cy - off));
+                continue;
             }
-            self.hits.push((rect(MARGIN, y, 30.0, 52.0), Act::Drag(d.id.clone())));
-            self.at(MARGIN + 32.0, y + 10.0);
-            self.p.renderer.draw(self.p.ctx, d, 32.0, self.theme, Layout::Ring, Some(bg))?;
-            self.reset();
-            self.p.text(&d.name, 13.5, DWRITE_FONT_WEIGHT_NORMAL, rect(MARGIN + 78.0, y + 8.0, 420.0, 20.0), fg, DWRITE_TEXT_ALIGNMENT_LEADING)?;
-            self.p.text(device_conn(d), 12.0, DWRITE_FONT_WEIGHT_NORMAL, rect(MARGIN + 78.0, y + 27.0, 420.0, 18.0), sub, DWRITE_TEXT_ALIGNMENT_LEADING)?;
-            self.switch(right, y + 26.0, !s.hidden.contains(&d.id), Act::Device(d.id.clone()))?;
-            self.rows.push((d.id.clone(), y));
-            y += 52.0 + ROW_GAP;
+            if Some(slot) == target {
+                slot += 1;
+            }
+            let ry = self.anims.get(&format!("row{}", d.id), list_top + slot as f32 * PITCH, 180);
+            self.list_row(d, ry, false, s)?;
+            slot += 1;
         }
-        // Húzás közben: a beszúrás helye egy kiemelő színű vonallal.
-        if let Some((_, drag_y)) = &self.drag {
-            let index = self.rows.iter().filter(|(_, top)| top + 26.0 < *drag_y).count();
-            let line_y = list_top + index as f32 * (52.0 + ROW_GAP) - ROW_GAP / 2.0;
-            self.p.fill(rect(MARGIN, line_y - 1.0, W - 2.0 * MARGIN, 2.0), 1.0, self.accent)?;
+        if let Some((d, ry)) = lifted {
+            self.anims.set(&format!("row{}", d.id), ry);
+            self.list_row(d, ry, true, s)?;
         }
+        y = list_top + shown.len() as f32 * PITCH;
+        self.list = (list_top, shown.iter().map(|d| d.id.clone()).collect());
         let cy = self.row(&mut y, "Eszközök hozzáadása és eltávolítása", Some("A Windows által észlelt eszközök listája"))?;
         self.button(right, cy, "Eszközök kezelése", false, Act::Page(Page::Devices))?;
         y += SECTION_GAP - ROW_GAP;
@@ -678,7 +772,7 @@ impl Ui<'_> {
         let sy = y + 74.0;
         self.p.text("Küszöb", 12.0, DWRITE_FONT_WEIGHT_NORMAL, rect(MARGIN + 16.0, sy - 10.0, 60.0, 20.0), sub, DWRITE_TEXT_ALIGNMENT_LEADING)?;
         let track = rect(MARGIN + 90.0, sy - 2.0, W - 2.0 * MARGIN - 90.0 - 70.0, 4.0);
-        let t = (s.low_threshold as f32 - 5.0) / 25.0;
+        let t = self.anims.get("threshold", (s.low_threshold as f32 - 5.0) / 25.0, 120);
         let tx = track.left + t * (track.right - track.left);
         self.p.fill(track, 2.0, self.theme.control_border())?;
         self.p.fill(rect(track.left, track.top, tx - track.left, 4.0), 2.0, self.accent)?;
@@ -727,14 +821,20 @@ unsafe fn paint(w: &mut Window) -> Result<()> {
     ctx.BeginDraw();
     ctx.Clear(Some(&theme.window()));
     // A görgetést egy eltolással kezeljük; a rajzoló segédek a jelenlegi transzformációra rajzolnak.
+    let mut anims = std::mem::take(&mut w.anims);
+    anims.frame();
+    // Oldalváltáskor a tartalom alulról beúszik és előtűnik.
+    let page = anims.get("page", 1.0, 220);
     let mut ui = Ui {
         p: Painter { ctx: &ctx, renderer: &w.renderer },
         theme,
         accent: theme.accent(),
         hits: Vec::new(),
-        scroll: w.scroll,
+        scroll: w.scroll - (1.0 - page) * 16.0,
         drag: w.drag_device.clone(),
-        rows: Vec::new(),
+        list: (0.0, Vec::new()),
+        anims,
+        hover: w.hover.map(|(x, y)| (x, y + w.scroll)),
     };
     ui.reset();
     let result = match w.page {
@@ -742,11 +842,21 @@ unsafe fn paint(w: &mut Window) -> Result<()> {
         Page::Devices => ui.build_devices(&w.settings, &w.devices, &w.candidates),
     };
     w.hits = std::mem::take(&mut ui.hits);
-    w.rows = std::mem::take(&mut ui.rows);
+    w.list = std::mem::take(&mut ui.list);
+    w.anims = std::mem::take(&mut ui.anims);
     if let Ok(h) = result {
         w.content_h = h;
     }
     ctx.SetTransform(&Matrix3x2::identity());
+    if page < 1.0 {
+        let _ = ui.p.fill(rect(0.0, 0.0, W, client_h(w)), 0.0, fade(theme.window(), 1.0 - page));
+    }
+    // Amíg valami mozog, a következő képkocka; utána az időzítő leáll.
+    if w.anims.active() {
+        SetTimer(w.hwnd, ANIM_TIMER, anim::FRAME_MS, None);
+    } else {
+        let _ = KillTimer(w.hwnd, ANIM_TIMER);
+    }
     if let Err(e) = ctx.EndDraw(None, None) {
         if e.code() == D2DERR_RECREATE_TARGET {
             w.rt = None;
@@ -812,8 +922,8 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                             SetCapture(hwnd);
                             drag_threshold(w, x, track);
                         }
-                        Some((_, Act::Drag(id))) => {
-                            w.drag_device = Some((id, y));
+                        Some((r, Act::Drag(id))) => {
+                            w.drag_device = Some((id, y, y - r.top));
                             SetCapture(hwnd);
                             let _ = InvalidateRect(hwnd, None, false);
                         }
@@ -826,10 +936,20 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 WINDOW.with_borrow_mut(|w| {
                     let Some(w) = w else { return };
                     let (x, y) = to_content(w, lparam);
+                    if !w.tracking {
+                        let mut tme = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: hwnd, dwHoverTime: 0 };
+                        w.tracking = TrackMouseEvent(&mut tme).is_ok();
+                    }
+                    w.hover = Some((x, y - w.scroll));
+                    let hit = w.hits.iter().position(|(r, _)| contains(r, x, y));
+                    if hit != w.hover_hit {
+                        w.hover_hit = hit;
+                        let _ = InvalidateRect(hwnd, None, false);
+                    }
                     if let Some(track) = w.dragging {
                         drag_threshold(w, x, track);
                     }
-                    if let Some((_, drag_y)) = w.drag_device.as_mut() {
+                    if let Some((_, drag_y, _)) = w.drag_device.as_mut() {
                         *drag_y = y;
                         let _ = InvalidateRect(hwnd, None, false);
                     }
@@ -852,9 +972,9 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                         let _ = ReleaseCapture();
                         return;
                     }
-                    if let Some((id, drag_y)) = w.drag_device.take() {
+                    if let Some((id, drag_y, offset)) = w.drag_device.take() {
                         let _ = ReleaseCapture();
-                        drop_device(w, &id, drag_y);
+                        drop_device(w, &id, drag_y - offset);
                         return;
                     }
                     let (x, y) = to_content(w, lparam);
@@ -862,6 +982,21 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                         on_act(w, act);
                     }
                 });
+                LRESULT(0)
+            }
+            WM_MOUSELEAVE => {
+                WINDOW.with_borrow_mut(|w| {
+                    if let Some(w) = w {
+                        w.tracking = false;
+                        w.hover = None;
+                        w.hover_hit = None;
+                        let _ = InvalidateRect(hwnd, None, false);
+                    }
+                });
+                LRESULT(0)
+            }
+            WM_TIMER if wparam.0 == ANIM_TIMER => {
+                let _ = InvalidateRect(hwnd, None, false);
                 LRESULT(0)
             }
             WM_KEYDOWN if wparam.0 == VK_ESCAPE.0 as usize => {

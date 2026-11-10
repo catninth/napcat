@@ -1,3 +1,4 @@
+pub mod anim;
 pub mod draw;
 pub mod estimate;
 pub mod flyout;
