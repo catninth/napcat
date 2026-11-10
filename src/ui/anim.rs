@@ -21,6 +21,9 @@ struct Anim {
 
 impl Anim {
     fn value(&self, now: Instant) -> (f32, bool) {
+        if self.from == self.to {
+            return (self.to, false);
+        }
         let t = (now.saturating_duration_since(self.start).as_secs_f32() / self.dur.as_secs_f32().max(0.001)).min(1.0);
         let e = 1.0 - (1.0 - t).powi(3);
         (self.from + (self.to - self.from) * e, t < 1.0)
