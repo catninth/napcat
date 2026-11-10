@@ -147,7 +147,9 @@ impl Provider for Mchose {
                 None => groups.push((id, name, vec![i])),
             }
         }
-        for (id, name, interfaces) in groups {
+        for (id, name, mut interfaces) in groups {
+            // A 0xFF01 válaszol (A7 V2 Ultra+ 8K vevőn ellenőrizve), a 0xFF0B elutasítja a kérést.
+            interfaces.sort_by_key(|i| i.usage_page != 0xFF01);
             let entry = self.seen.entry(id.clone()).or_insert_with(|| (name, None));
             if let Some(fresh) = interfaces.iter().find_map(read) {
                 entry.1 = Some(fresh);
@@ -191,6 +193,15 @@ mod tests {
         r.extend(payload.iter().map(|b| !b));
         r.resize(REPORT_LEN, 0xFF);
         r
+    }
+
+    #[test]
+    fn real_capture() {
+        // A7 V2 Ultra+ a 8K vevőn (3837:100B, 0xFF01), napcat-diag kimenetéből.
+        let ack = [0x13, 0x1A, 0xF9, 0xFF, 0xFF];
+        assert!(is_ready(&ack));
+        let resp = [0x11, 0xF9, 0xC8, 0xC7, 0xDE, 0xBF, 0xFA, 0xD1, 0xFD, 0xFB, 0xF6, 0x9B, 0xFF, 0x9B, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
+        assert_eq!(parse_info(&resp), Some(Info { level: 100, wired: false, charge: ChargeState::Discharging }));
     }
 
     #[test]

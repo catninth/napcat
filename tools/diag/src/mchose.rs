@@ -65,9 +65,9 @@ pub unsafe fn run() -> String {
         let mut done = false;
         for attempt in 1..=15 {
             if !dev.set_feature(&req) {
-                out!(s, "  {attempt}. SetFeature nem sikerült");
-                std::thread::sleep(Duration::from_secs(1));
-                continue;
+                // Ez a kollekció nem fogadja a 0x11-es reportot (pl. 0xFF0B); nincs mit ismételni.
+                out!(s, "  SetFeature nem sikerült, ez a kollekció nem fogadja a kérést");
+                break;
             }
             let deadline = Instant::now() + Duration::from_millis(400);
             while Instant::now() < deadline {
