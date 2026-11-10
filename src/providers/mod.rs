@@ -7,6 +7,7 @@ pub mod hid;
 pub mod logitech_hidpp;
 pub mod mchose;
 pub mod playstation;
+pub mod rk;
 pub mod steelseries;
 pub mod wired_detect;
 pub mod xinput;
