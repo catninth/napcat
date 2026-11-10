@@ -11,6 +11,12 @@ members = [".", "tools/diag"]
 [build-dependencies]
 winresource = "0.1"
 
+[dependencies]
+# A közös catninth updater; csak a frissítő segédfolyamat használja (src/updater.rs).
+catninth-updater = { git = "https://github.com/catninth/updater", rev = "84c3cdf" }
+async-trait = "0.1"
+tokio = { version = "1", default-features = false, features = ["rt"] }
+
 [dependencies.windows]
 version = "0.58"
 features = [
