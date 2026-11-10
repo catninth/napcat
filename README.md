@@ -19,6 +19,7 @@ no WebView, no UI framework, and practically zero CPU when idle.
 | Installer (Inno Setup), auto-update from GitHub Releases | done, not yet released |
 | PlayStation controllers (DualSense, DualSense Edge, DualShock 4; USB and Bluetooth) | done, tested with DualShock 4 over USB |
 | Compx receivers (VGN, ATK, VXE mice) | done, tested with VGN Dragonfly |
+| MCHOSE mice (A7 V2 Pro/Pro+/Ultra/Ultra+; cable and receiver) | done, untested on hardware |
 | Xbox controllers (XInput, approximate level) | done, untested on hardware |
 | Logitech HID++ 2.0 (Unifying, Bolt, Lightspeed, wired) | done, untested on hardware |
 | Bluetooth battery (Windows battery property) | done, untested on hardware |

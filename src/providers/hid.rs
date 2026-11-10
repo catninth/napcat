@@ -25,6 +25,8 @@ pub struct HidInterface {
     pub usage_page: u16,
     pub usage: u16,
     pub input_len: u16,
+    /// A leghosszabb feature report hossza a report ID-vel együtt (0: nincs feature report).
+    pub feature_len: u16,
 }
 
 impl HidInterface {
@@ -151,6 +153,7 @@ unsafe fn info(path: &[u16], desc: Option<&str>) -> Option<HidInterface> {
         usage_page: caps.UsagePage,
         usage: caps.Usage,
         input_len: caps.InputReportByteLength,
+        feature_len: caps.FeatureReportByteLength,
     })
 }
 
@@ -231,6 +234,11 @@ impl Device {
         let mut buf = vec![0u8; len];
         buf[0] = id;
         unsafe { HidD_GetFeature(self.h, buf.as_mut_ptr() as *mut c_void, len as u32).as_bool().then_some(buf) }
+    }
+
+    /// Feature report küldése (az első bájt a report ID).
+    pub fn set_feature(&self, data: &[u8]) -> bool {
+        unsafe { HidD_SetFeature(self.h, data.as_ptr() as *const c_void, data.len() as u32).as_bool() }
     }
 }
 

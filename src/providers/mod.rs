@@ -5,6 +5,7 @@ pub mod compx;
 pub mod custom;
 pub mod hid;
 pub mod logitech_hidpp;
+pub mod mchose;
 pub mod playstation;
 pub mod wired_detect;
 pub mod xinput;
