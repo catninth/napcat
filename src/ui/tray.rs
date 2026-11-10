@@ -46,12 +46,16 @@ const ID_EXIT: usize = 100;
 const ID_AUTOSTART: usize = 101;
 const ID_SETTINGS: usize = 102;
 const ID_HIDE: usize = 103;
-const ID_UPDATE: usize = 104;
+pub const ID_UPDATE: usize = 104;
 const ID_SHOW_BASE: usize = 200;
 
 /// A letöltött, ellenőrzött telepítő készen áll (READY).
 const WM_UPDATE_READY: u32 = WM_APP + 4;
-static INSTALLING: AtomicBool = AtomicBool::new(false);
+pub static INSTALLING: AtomicBool = AtomicBool::new(false);
+/// Kézi frissítés-keresés kérése (a beállítások ablakból).
+pub const WM_UPDATE_CHECK: u32 = WM_APP + 8;
+/// A kézi keresés véget ért (a beállítások ablak újrarajzolásához).
+const WM_UPDATE_CHECKED: u32 = WM_APP + 9;
 static READY: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 /// Új verzió érkezett: automatikus módban telepít, különben értesít.
@@ -80,6 +84,7 @@ unsafe fn start_install(hwnd: HWND) {
     if INSTALLING.swap(true, Ordering::Relaxed) {
         return;
     }
+    settings_window::refresh();
     let hwnd_raw = hwnd.0 as isize; // a HWND nem Send
     std::thread::spawn(move || {
         let path = updater::download_in_child(&release);
@@ -101,9 +106,28 @@ unsafe fn on_update_ready(hwnd: HWND) {
         }
         _ => {
             INSTALLING.store(false, Ordering::Relaxed);
+            settings_window::refresh();
             notify_app(hwnd, "A frissítés nem sikerült", "A letöltés vagy az ellenőrzés hibát adott; később újra próbálható.", true);
         }
     }
+}
+
+/// Kézi frissítés-keresés egy rövid életű szálon; talált kiadásnál WM_UPDATE, különben csak
+/// a beállítások ablak frissül.
+unsafe fn start_check(hwnd: HWND) {
+    if updater::CHECKING.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    settings_window::refresh();
+    let hwnd_raw = hwnd.0 as isize;
+    std::thread::spawn(move || {
+        let found = updater::check_in_child(env!("CARGO_PKG_VERSION")).is_some();
+        updater::CHECKING.store(false, Ordering::Relaxed);
+        let msg = if found { WM_UPDATE } else { WM_UPDATE_CHECKED };
+        unsafe {
+            let _ = PostMessageW(HWND(hwnd_raw as *mut _), msg, WPARAM(0), LPARAM(0));
+        }
+    });
 }
 
 /// Alacsony akku értesítés második (kritikus) küszöbe; az első a beállításokból jön.
@@ -878,7 +902,16 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 LRESULT(0)
             }
             WM_UPDATE => {
+                settings_window::refresh();
                 on_update(hwnd);
+                LRESULT(0)
+            }
+            WM_UPDATE_CHECK => {
+                start_check(hwnd);
+                LRESULT(0)
+            }
+            WM_UPDATE_CHECKED => {
+                settings_window::refresh();
                 LRESULT(0)
             }
             flyout::WM_FLYOUT => {

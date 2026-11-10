@@ -5,6 +5,7 @@
 use std::cell::RefCell;
 use std::ffi::c_void;
 use std::mem::size_of;
+use std::sync::atomic::Ordering;
 
 use windows::core::{w, Interface, Result, PCWSTR};
 use windows::Foundation::Numerics::Matrix3x2;
@@ -25,9 +26,11 @@ use super::anim::{self, fade, mix, Anims};
 use super::draw::{contains, rect, Painter};
 use super::icon_render::{AppIcon, IconRenderer, Layout};
 use super::theme::{self, rgb, Theme};
+use super::tray;
 use crate::model::{ChargeState, DeviceKind, DeviceState};
 use crate::providers::custom::{self, Candidate};
 use crate::settings::{self, CustomDevice, Settings};
+use crate::updater;
 
 /// Üzenet a tálca ablaknak: a beállítások megváltoztak (újraolvasás a fájlból).
 pub const WM_SETTINGS_CHANGED: u32 = WM_APP + 6;
@@ -84,6 +87,10 @@ enum Act {
     Kind(String),
     /// Az eszköz sorának fogantyúja: átrendezés húzással (az egérgomb lenyomásával indul).
     Drag(String),
+    /// Frissítés keresése most.
+    CheckUpdate,
+    /// Az elérhető frissítés letöltése és telepítése.
+    InstallUpdate,
 }
 
 fn kind_label(k: DeviceKind) -> &'static str {
@@ -357,8 +364,26 @@ unsafe fn on_act(w: &mut Window, act: Act) {
             windows::Win32::UI::Shell::ShellExecuteW(None, w!("open"), w!("ms-settings:bluetooth"), None, None, SW_SHOWNORMAL);
             return;
         }
+        // A tálca ablaka végzi (ugyanaz, mint a menü parancsai); az állapotot ő jelzi vissza.
+        Act::CheckUpdate => {
+            let _ = PostMessageW(w.owner, tray::WM_UPDATE_CHECK, WPARAM(0), LPARAM(0));
+            return;
+        }
+        Act::InstallUpdate => {
+            let _ = PostMessageW(w.owner, WM_COMMAND, WPARAM(tray::ID_UPDATE), LPARAM(0));
+            return;
+        }
     }
     changed(w);
+}
+
+/// Újrarajzolás, ha nyitva van (pl. változott a frissítés állapota).
+pub unsafe fn refresh() {
+    WINDOW.with_borrow(|w| {
+        if let Some(w) = w {
+            let _ = InvalidateRect(w.hwnd, None, false);
+        }
+    });
 }
 
 /// A húzott sor helye a listában a sor teteje (`top`) szerint: a legközelebbi hely, 0..n-1.
@@ -660,6 +685,13 @@ impl Ui<'_> {
         let mut y = 24.0;
         self.p.logo(MARGIN, y, 32.0)?;
         self.p.text("Beállítások", 24.0, DWRITE_FONT_WEIGHT_SEMI_BOLD, rect(MARGIN + 44.0, y, 400.0, 32.0), fg, DWRITE_TEXT_ALIGNMENT_LEADING)?;
+        // Verzió a jobb felső sarokban; ha van frissítés, kiemelő színnel jelzi (a gomb a Névjegyben).
+        let update = updater::AVAILABLE.lock().ok().and_then(|a| a.clone());
+        let (version, color) = match &update {
+            Some(r) => (format!("v{} · frissítés: v{}", env!("CARGO_PKG_VERSION"), r.version), self.accent),
+            None => (format!("v{}", env!("CARGO_PKG_VERSION")), sub),
+        };
+        self.p.text(&version, 12.5, DWRITE_FONT_WEIGHT_NORMAL, rect(right - 300.0, y + 8.0, 300.0, 18.0), color, DWRITE_TEXT_ALIGNMENT_TRAILING)?;
         y += 32.0 + SECTION_GAP;
 
         // Általános
@@ -825,6 +857,30 @@ impl Ui<'_> {
         self.segmented(right, cy, &[("30", "30 másodperc"), ("60", "1 perc"), ("300", "5 perc")], poll, |k| Act::Poll(k.parse().unwrap_or(60)))?;
         let cy = self.row(&mut y, "Frissítések", Some("Új NapCat verzió a GitHubról"))?;
         self.segmented(right, cy, &[("auto", "Automatikus"), ("notify", "Értesítés"), ("off", "Ki")], &s.update_mode, Act::Updates)?;
+        y += SECTION_GAP - ROW_GAP;
+
+        // Névjegy: verzió és frissítés
+        self.section(&mut y, "Névjegy")?;
+        let available = updater::AVAILABLE.lock().ok().and_then(|a| a.clone());
+        let installing = tray::INSTALLING.load(Ordering::Relaxed);
+        let checking = updater::CHECKING.load(Ordering::Relaxed);
+        let status = match (&available, installing, checking) {
+            (Some(r), true, _) => format!("A {} letöltése és telepítése folyamatban…", r.version),
+            (Some(r), false, _) => format!("Új verzió érhető el: {}", r.version),
+            (None, _, true) => "Frissítés keresése…".to_string(),
+            (None, _, false) => match updater::LAST_CHECK.load(Ordering::Relaxed) {
+                1 => "Ez a legfrissebb verzió".to_string(),
+                2 => "A frissítés keresése nem sikerült".to_string(),
+                _ => "Frissítések a GitHubról".to_string(),
+            },
+        };
+        let title = format!("NapCat {}", env!("CARGO_PKG_VERSION"));
+        let cy = self.row(&mut y, &title, Some(&status))?;
+        match (&available, installing || checking) {
+            (Some(_), false) => self.button(right, cy, "Telepítés", true, Act::InstallUpdate)?,
+            (None, false) => self.button(right, cy, "Frissítés keresése", false, Act::CheckUpdate)?,
+            (_, true) => {}
+        }
         Ok(y + 32.0 - ROW_GAP)
     }
 }

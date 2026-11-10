@@ -135,6 +135,8 @@ fn gallery() {
         Candidate { vid: 0x3142, pid: 0x0A80, product: "fifine Microphone".into(), kind: DeviceKind::Headset },
         Candidate { vid: 0x258A, pid: 0x0049, product: "Gaming Keyboard".into(), kind: DeviceKind::Keyboard },
     ];
+    // A Névjegy szakasz elérhető frissítéssel (Telepítés gomb).
+    *crate::updater::AVAILABLE.lock().unwrap() = Some(crate::updater::Release { version: "0.2.0".into(), tag: "v0.2.0".into() });
     for light in [false, true] {
         let t = use_theme(light);
         let name = if light { "light" } else { "dark" };

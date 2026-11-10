@@ -12,6 +12,7 @@
 
 use std::ffi::c_void;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -198,9 +199,16 @@ fn run_child(args: &[&str]) -> Option<String> {
     output.status.success().then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+/// Az utolsó ellenőrzés eredménye a beállítások ablaknak: 0 még nem volt, 1 sikerült, 2 hiba.
+pub static LAST_CHECK: AtomicU8 = AtomicU8::new(0);
+/// Kézi ellenőrzés fut (a beállítások gombja).
+pub static CHECKING: AtomicBool = AtomicBool::new(false);
+
 /// Ellenőrzés segédfolyamatban; az elérhető kiadást ebben a folyamatban tárolja.
 pub fn check_in_child(current: &str) -> Option<Release> {
-    let out = run_child(&["--update-check"])?;
+    let out = run_child(&["--update-check"]);
+    LAST_CHECK.store(if out.is_some() { 1 } else { 2 }, Ordering::Relaxed);
+    let out = out?;
     let release = out.lines().find_map(|line| match line.split('\t').collect::<Vec<_>>().as_slice() {
         ["release", v, tag] => Some(Release { version: v.to_string(), tag: tag.to_string() }),
         _ => None,
