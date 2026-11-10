@@ -28,6 +28,15 @@ const NAME: DEVPROPKEY = DEVPROPKEY {
     pid: 10,
 };
 
+const CONTAINER_ID: DEVPROPKEY = DEVPROPKEY {
+    fmtid: GUID::from_u128(0x8c7ed206_3f8a_4827_b3ab_ae9e1faefc6c),
+    pid: 2,
+};
+const IS_CONNECTED: DEVPROPKEY = DEVPROPKEY {
+    fmtid: GUID::from_u128(0x83DA6326_97A6_4088_9453_A1923F573B29),
+    pid: 15,
+};
+
 mod compx;
 mod io;
 mod listen;
@@ -98,8 +107,30 @@ unsafe fn dev_string_prop(set: HDEVINFO, dev: &SP_DEVINFO_DATA, key: &DEVPROPKEY
     Some(wide_to_string(&w))
 }
 
+/// A devnode containere és csatlakozás-jelzője ({83DA6326-…} 15), ha van.
+unsafe fn container_and_flag(set: HDEVINFO, dev: &SP_DEVINFO_DATA) -> (Option<u128>, Option<bool>) {
+    let mut ty = DEVPROPTYPE(0);
+    let mut c = [0u8; 16];
+    let container = SetupDiGetDevicePropertyW(set, dev, &CONTAINER_ID, &mut ty, Some(&mut c), None, 0).ok().map(|_| u128::from_le_bytes(c));
+    let mut f = [0u8; 1];
+    let mut size = 0u32;
+    let flag = SetupDiGetDevicePropertyW(set, dev, &IS_CONNECTED, &mut ty, Some(&mut f), Some(&mut size), 0).ok().filter(|_| size == 1).map(|_| f[0] != 0);
+    (container, flag)
+}
+
 unsafe fn bt_battery() -> windows::core::Result<()> {
     let set = SetupDiGetClassDevsW(None, PCWSTR::null(), None, DIGCF_ALLCLASSES | DIGCF_PRESENT)?;
+    // Először minden devnode csatlakozás-jelzője containerenként (ahogy a NapCat is dönt).
+    let mut flags: Vec<(u128, bool)> = Vec::new();
+    for i in 0.. {
+        let mut dev = SP_DEVINFO_DATA { cbSize: size_of::<SP_DEVINFO_DATA>() as u32, ..Default::default() };
+        if SetupDiEnumDeviceInfo(set, i, &mut dev).is_err() {
+            break;
+        }
+        if let (Some(c), Some(f)) = container_and_flag(set, &dev) {
+            flags.push((c, f));
+        }
+    }
     let mut found = 0;
     for i in 0.. {
         let mut dev = SP_DEVINFO_DATA { cbSize: size_of::<SP_DEVINFO_DATA>() as u32, ..Default::default() };
@@ -115,7 +146,16 @@ unsafe fn bt_battery() -> windows::core::Result<()> {
         let name = dev_string_prop(set, &dev, &NAME).unwrap_or_default();
         let mut id = [0u16; 512];
         let _ = SetupDiGetDeviceInstanceIdW(set, &dev, Some(&mut id), None);
-        println!("{:>3}%  {}  [{}]", buf[0], name, wide_to_string(&id));
+        let mine: Vec<bool> = match container_and_flag(set, &dev).0 {
+            Some(c) => flags.iter().filter(|f| f.0 == c).map(|f| f.1).collect(),
+            None => Vec::new(),
+        };
+        let state = match (mine.is_empty(), mine.iter().any(|&f| f)) {
+            (true, _) => "csatlakozás-jelző nincs (csatlakoztatottnak vesszük)".to_string(),
+            (false, true) => format!("csatlakoztatva {mine:?}"),
+            (false, false) => format!("NINCS csatlakoztatva {mine:?}"),
+        };
+        println!("{:>3}%  {}  [{}]  {state}", buf[0], name, wide_to_string(&id));
     }
     if found == 0 {
         println!("(egyetlen eszköz sem ad Bluetooth akku property-t)");

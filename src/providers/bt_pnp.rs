@@ -20,6 +20,10 @@ const NAME: DEVPROPKEY = DEVPROPKEY { fmtid: GUID::from_u128(0xb725f130_47ef_101
 const CONTAINER_ID: DEVPROPKEY = DEVPROPKEY { fmtid: GUID::from_u128(0x8c7ed206_3f8a_4827_b3ab_ae9e1faefc6c), pid: 2 };
 /// Bluetooth Class of Device (Classic BT): a fő- és alosztályból jön az eszköztípus.
 const CLASS_OF_DEVICE: DEVPROPKEY = DEVPROPKEY { fmtid: GUID::from_u128(0x2bd67d8b_8beb_48d5_87e0_6cda3428040a), pid: 10 };
+/// Csatlakoztatva-e (DEVPROP_TYPE_BOOLEAN) a Bluetooth devnode-okon. A párosított eszközök
+/// devnode-jai kikapcsolva is "jelen vannak", és az akku property a legutóbbi szintet őrzi;
+/// ebből látszik, hogy most valóban kapcsolódik-e.
+const IS_CONNECTED: DEVPROPKEY = DEVPROPKEY { fmtid: GUID::from_u128(0x83DA6326_97A6_4088_9453_A1923F573B29), pid: 15 };
 
 unsafe fn property(set: HDEVINFO, dev: &SP_DEVINFO_DATA, key: &DEVPROPKEY, buf: &mut [u8]) -> Option<usize> {
     let mut ty = DEVPROPTYPE(0);
@@ -62,37 +66,59 @@ fn kind_of(cod: Option<u32>, name: &str) -> DeviceKind {
     }
 }
 
-/// Minden jelenlévő eszköz, amelyen van akku property: (container azonosító, név, típus, szint).
-fn scan_devices() -> Vec<(String, String, DeviceKind, u8)> {
-    let mut out: Vec<(String, String, DeviceKind, u8)> = Vec::new();
+/// Egy akkus Bluetooth eszköz a devnode-jai alapján.
+struct Found {
+    id: String,
+    name: String,
+    kind: DeviceKind,
+    level: u8,
+}
+
+/// A container csatlakozás-jelzői: ha bármelyik devnode-ja igazat mond, csatlakoztatva van; ha
+/// van jelző, de mind hamis, nincs; jelző nélkül (régebbi Windows, más illesztő) csatlakoztatottnak
+/// vesszük, ahogy eddig.
+fn connected(flags: Option<&Vec<bool>>) -> bool {
+    flags.map_or(true, |f| f.iter().any(|&c| c))
+}
+
+/// Minden jelenlévő eszköz, amelyen van akku property, és hogy most csatlakoztatva van-e.
+fn scan_devices() -> Vec<(Found, bool)> {
+    let mut found: Vec<Found> = Vec::new();
+    // Container -> a devnode-jain talált csatlakozás-jelzők.
+    let mut flags: HashMap<String, Vec<bool>> = HashMap::new();
     unsafe {
-        let Ok(set) = SetupDiGetClassDevsW(None, PCWSTR::null(), None, DIGCF_ALLCLASSES | DIGCF_PRESENT) else { return out };
+        let Ok(set) = SetupDiGetClassDevsW(None, PCWSTR::null(), None, DIGCF_ALLCLASSES | DIGCF_PRESENT) else { return Vec::new() };
         for i in 0.. {
             let mut dev = SP_DEVINFO_DATA { cbSize: size_of::<SP_DEVINFO_DATA>() as u32, ..Default::default() };
             if SetupDiEnumDeviceInfo(set, i, &mut dev).is_err() {
                 break;
             }
+            // Egy fizikai eszköz több devnode-on is hordozhatja: a container azonosító egyesíti őket.
+            let mut container = [0u8; 16];
+            let container_id = match property(set, &dev, &CONTAINER_ID, &mut container) {
+                Some(16) => Some(format!("bt-{:032x}", u128::from_le_bytes(container))),
+                _ => None,
+            };
+            let mut flag = [0u8; 1];
+            if let (Some(c), Some(1)) = (&container_id, property(set, &dev, &IS_CONNECTED, &mut flag)) {
+                flags.entry(c.clone()).or_default().push(flag[0] != 0);
+            }
             let mut level = [0u8; 4];
             if property(set, &dev, &BATTERY, &mut level).is_none() {
                 continue;
             }
-            // Egy fizikai eszköz több devnode-on is hordozhatja: a container azonosító egyesíti őket.
-            let mut container = [0u8; 16];
-            let id = match property(set, &dev, &CONTAINER_ID, &mut container) {
-                Some(16) => format!("bt-{:032x}", u128::from_le_bytes(container)),
-                _ => format!("bt-{i}"),
-            };
-            if out.iter().any(|d| d.0 == id) {
+            let id = container_id.unwrap_or_else(|| format!("bt-{i}"));
+            if found.iter().any(|d| d.id == id) {
                 continue;
             }
             let name = string_property(set, &dev, &NAME).unwrap_or_else(|| crate::i18n::t("Bluetooth eszköz", "Bluetooth device").into());
             let mut cod = [0u8; 4];
             let cod = property(set, &dev, &CLASS_OF_DEVICE, &mut cod).filter(|&n| n == 4).map(|_| u32::from_le_bytes(cod));
-            out.push((id, name.clone(), kind_of(cod, &name), level[0].min(100)));
+            found.push(Found { id, kind: kind_of(cod, &name), name, level: level[0].min(100) });
         }
         let _ = SetupDiDestroyDeviceInfoList(set);
     }
-    out
+    found.into_iter().map(|f| { let c = connected(flags.get(&f.id)); (f, c) }).collect()
 }
 
 #[derive(Default)]
@@ -104,8 +130,13 @@ pub struct BtPnp {
 impl Provider for BtPnp {
     fn scan(&mut self) -> Vec<DeviceState> {
         let mut out = Vec::new();
-        for (id, name, kind, level) in scan_devices() {
+        for (Found { id, name, kind, level }, connected) in scan_devices() {
             self.seen.insert(id.clone(), (name.clone(), kind));
+            // Párosított, de most nem kapcsolódó eszköz: a tárolt szint régi, nem mutatjuk.
+            if !connected {
+                out.push(DeviceState::disconnected(&id, &name, kind));
+                continue;
+            }
             out.push(DeviceState {
                 id,
                 name,
@@ -118,6 +149,8 @@ impl Provider for BtPnp {
                 hw: None, estimate: None,
             });
         }
+        // A párosított eszközök kikapcsolva is a listában vannak: a lekérdezés addig fut, amíg
+        // van akár csak párosított eszköz, hogy a visszakapcsolást is észrevegyük.
         self.connected = out.len();
         for (id, (name, kind)) in &self.seen {
             if !out.iter().any(|d| &d.id == id) {
@@ -147,6 +180,13 @@ mod tests {
         assert_eq!(kind_of(None, "Logitech G435"), DeviceKind::Other);
         assert_eq!(kind_of(None, "Sony WH-1000XM4"), DeviceKind::Headset);
         assert_eq!(kind_of(None, "R75 Keyboard"), DeviceKind::Keyboard);
+    }
+
+    #[test]
+    fn connection_flags() {
+        assert!(connected(None)); // nincs jelző: a régi viselkedés
+        assert!(connected(Some(&vec![false, true])));
+        assert!(!connected(Some(&vec![false, false])));
     }
 
     /// A gépen most látható Bluetooth akku propertyk (`cargo test bt_present -- --ignored --nocapture`).
