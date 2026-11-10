@@ -350,6 +350,21 @@ impl App {
         self.devices.iter_mut().chain(std::iter::once(&mut self.placeholder))
     }
 
+    /// Az eszközök a beállított sorrendben (ami nincs benne, a végére, érkezési sorrendben). Ha a
+    /// tálcán látszók sorrendje változik, az ikonokat újra felvesszük, mert a Windows a hozzáadás
+    /// sorrendjében mutatja őket; a következő sync már a helyes sorrendben adja hozzá őket.
+    unsafe fn reorder(&mut self, hwnd: HWND) {
+        let before: Vec<String> = self.devices.iter().map(|d| d.state.id.clone()).collect();
+        let order = self.settings.order.clone();
+        self.devices.sort_by_key(|d| order.iter().position(|o| *o == d.state.id).unwrap_or(usize::MAX));
+        let after: Vec<String> = self.devices.iter().map(|d| d.state.id.clone()).collect();
+        if before != after {
+            for d in self.devices.iter_mut() {
+                d.remove(hwnd);
+            }
+        }
+    }
+
     /// Egy eszköz állapota a friss becsléssel (az idő múlásával a "2 órája" is változik).
     fn with_estimate(&self, d: &TrayIcon) -> DeviceState {
         let estimate = self.histories.get(&d.state.id).and_then(|h| h.estimate(&d.state, Instant::now()));
@@ -404,6 +419,7 @@ impl App {
         for icon in self.icons_mut() {
             icon.key = None; // szín, elrendezés vagy típus változhatott: újrarajzolás
         }
+        self.reorder(hwnd);
         self.sync(hwnd);
     }
 
@@ -627,6 +643,7 @@ unsafe fn on_devices(hwnd: HWND) {
                 notes.push((d.state.id.clone(), format!("{} feltöltve", d.state.name), "100%, lecsatlakoztathatod a töltőről.".into(), false));
             }
         }
+        app.reorder(hwnd);
         app.sync(hwnd);
         // Első indítás: a Windows 11 az új tálcaikonokat a rejtett területre teszi. Az első
         // eszközfrissítés után szólunk, hogy az értesítés egy maradandó ikonhoz tartozzon.

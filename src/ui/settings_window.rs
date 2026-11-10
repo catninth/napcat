@@ -75,6 +75,8 @@ enum Act {
     PairBluetooth,
     /// Eszköztípus váltása (körbejár, végül vissza automatikusra).
     Kind(String),
+    /// Az eszköz sorának fogantyúja: átrendezés húzással (az egérgomb lenyomásával indul).
+    Drag(String),
 }
 
 fn kind_label(k: DeviceKind) -> &'static str {
@@ -112,6 +114,10 @@ struct Window {
     hits: Vec<(D2D_RECT_F, Act)>,
     /// A küszöb csúszka húzása közben a csúszka sávja (tartalom koordinátákban).
     dragging: Option<D2D_RECT_F>,
+    /// Az átrendezéshez húzott eszköz és a kurzor y-ja.
+    drag_device: Option<(String, f32)>,
+    /// A tálca eszközlistájának sorai az utolsó rajzolásból (id, felső y).
+    rows: Vec<(String, f32)>,
 }
 
 thread_local! {
@@ -192,6 +198,8 @@ unsafe fn create(owner: HWND, devices: Vec<DeviceState>, page: Page) -> Result<(
         content_h: 1180.0,
         hits: Vec::new(),
         dragging: None,
+        drag_device: None,
+        rows: Vec::new(),
     }));
     apply_frame(hwnd);
     set_window_icons(hwnd, dpi);
@@ -301,6 +309,7 @@ unsafe fn on_act(w: &mut Window, act: Act) {
             s.hidden.retain(|h| *h != id);
         }
         Act::Restore(id) => s.removed.retain(|r| *r != id),
+        Act::Drag(_) => return, // a húzást az egérkezelés intézi
         Act::Kind(id) => {
             // Körbejár: automatikus -> billentyűzet -> egér -> fejhallgató -> kontroller -> egyéb -> automatikus.
             const ORDER: [&str; 5] = ["keyboard", "mouse", "headset", "controller", "other"];
@@ -326,6 +335,26 @@ unsafe fn on_act(w: &mut Window, act: Act) {
             return;
         }
     }
+    changed(w);
+}
+
+/// Az átrendezés befejezése: a húzott eszköz a kurzor alatti helyre kerül; az új sorrend mentődik.
+unsafe fn drop_device(w: &mut Window, id: &str, drag_y: f32) {
+    let mut ids: Vec<String> = w.rows.iter().map(|(i, _)| i.clone()).collect();
+    let target = w.rows.iter().filter(|(_, top)| top + 26.0 < drag_y).count();
+    let Some(from) = ids.iter().position(|i| i == id) else { return };
+    let moved = ids.remove(from);
+    let to = if target > from { target - 1 } else { target }.min(ids.len());
+    ids.insert(to, moved);
+    // A teljes sorrend: a lista, utána a többi ismert eszköz (pl. eltávolítottak) változatlanul.
+    for d in &w.devices {
+        if !ids.contains(&d.id) {
+            ids.push(d.id.clone());
+        }
+    }
+    // Az ablak saját listája is azonnal az új sorrendben.
+    w.devices.sort_by_key(|d| ids.iter().position(|i| *i == d.id).unwrap_or(usize::MAX));
+    w.settings.order = ids;
     changed(w);
 }
 
@@ -356,6 +385,10 @@ struct Ui<'a> {
     hits: Vec<(D2D_RECT_F, Act)>,
     /// Görgetés: minden rajz ennyivel feljebb kerül.
     scroll: f32,
+    /// Éppen húzott eszköz és a kurzor y-ja (tartalom koordinátákban).
+    drag: Option<(String, f32)>,
+    /// A tálca eszközlistájának sorai (id, felső y): a húzás célhelyéhez.
+    rows: Vec<(String, f32)>,
 }
 
 impl Ui<'_> {
@@ -605,15 +638,30 @@ impl Ui<'_> {
         if shown.is_empty() {
             self.row(&mut y, "Még nincs ismert eszköz", None)?;
         }
+        let list_top = y;
         for d in shown {
-            self.p.fill(rect(MARGIN, y, W - 2.0 * MARGIN, 52.0), 8.0, self.theme.row())?;
-            self.at(MARGIN + 14.0, y + 10.0);
-            self.p.renderer.draw(self.p.ctx, d, 32.0, self.theme, Layout::Ring, Some(self.theme.row()))?;
+            let dragged = self.drag.as_ref().is_some_and(|(id, _)| *id == d.id);
+            let bg = if dragged { self.theme.segment_selected() } else { self.theme.row() };
+            self.p.fill(rect(MARGIN, y, W - 2.0 * MARGIN, 52.0), 8.0, bg)?;
+            // Fogantyú (hat pötty): ennél fogva húzható a sor.
+            for (dx, dy) in [(0.0, 0.0), (6.0, 0.0), (0.0, 5.0), (6.0, 5.0), (0.0, 10.0), (6.0, 10.0)] {
+                self.p.circle(MARGIN + 13.0 + dx, y + 21.0 + dy, 1.4, self.theme.control_border())?;
+            }
+            self.hits.push((rect(MARGIN, y, 30.0, 52.0), Act::Drag(d.id.clone())));
+            self.at(MARGIN + 32.0, y + 10.0);
+            self.p.renderer.draw(self.p.ctx, d, 32.0, self.theme, Layout::Ring, Some(bg))?;
             self.reset();
-            self.p.text(&d.name, 13.5, DWRITE_FONT_WEIGHT_NORMAL, rect(MARGIN + 60.0, y + 8.0, 440.0, 20.0), fg, DWRITE_TEXT_ALIGNMENT_LEADING)?;
-            self.p.text(device_conn(d), 12.0, DWRITE_FONT_WEIGHT_NORMAL, rect(MARGIN + 60.0, y + 27.0, 440.0, 18.0), sub, DWRITE_TEXT_ALIGNMENT_LEADING)?;
+            self.p.text(&d.name, 13.5, DWRITE_FONT_WEIGHT_NORMAL, rect(MARGIN + 78.0, y + 8.0, 420.0, 20.0), fg, DWRITE_TEXT_ALIGNMENT_LEADING)?;
+            self.p.text(device_conn(d), 12.0, DWRITE_FONT_WEIGHT_NORMAL, rect(MARGIN + 78.0, y + 27.0, 420.0, 18.0), sub, DWRITE_TEXT_ALIGNMENT_LEADING)?;
             self.switch(right, y + 26.0, !s.hidden.contains(&d.id), Act::Device(d.id.clone()))?;
+            self.rows.push((d.id.clone(), y));
             y += 52.0 + ROW_GAP;
+        }
+        // Húzás közben: a beszúrás helye egy kiemelő színű vonallal.
+        if let Some((_, drag_y)) = &self.drag {
+            let index = self.rows.iter().filter(|(_, top)| top + 26.0 < *drag_y).count();
+            let line_y = list_top + index as f32 * (52.0 + ROW_GAP) - ROW_GAP / 2.0;
+            self.p.fill(rect(MARGIN, line_y - 1.0, W - 2.0 * MARGIN, 2.0), 1.0, self.accent)?;
         }
         let cy = self.row(&mut y, "Eszközök hozzáadása és eltávolítása", Some("A Windows által észlelt eszközök listája"))?;
         self.button(right, cy, "Eszközök kezelése", false, Act::Page(Page::Devices))?;
@@ -679,13 +727,22 @@ unsafe fn paint(w: &mut Window) -> Result<()> {
     ctx.BeginDraw();
     ctx.Clear(Some(&theme.window()));
     // A görgetést egy eltolással kezeljük; a rajzoló segédek a jelenlegi transzformációra rajzolnak.
-    let mut ui = Ui { p: Painter { ctx: &ctx, renderer: &w.renderer }, theme, accent: theme.accent(), hits: Vec::new(), scroll: w.scroll };
+    let mut ui = Ui {
+        p: Painter { ctx: &ctx, renderer: &w.renderer },
+        theme,
+        accent: theme.accent(),
+        hits: Vec::new(),
+        scroll: w.scroll,
+        drag: w.drag_device.clone(),
+        rows: Vec::new(),
+    };
     ui.reset();
     let result = match w.page {
         Page::Settings => ui.build(&w.settings, w.autostart, &w.devices),
         Page::Devices => ui.build_devices(&w.settings, &w.devices, &w.candidates),
     };
     w.hits = std::mem::take(&mut ui.hits);
+    w.rows = std::mem::take(&mut ui.rows);
     if let Ok(h) = result {
         w.content_h = h;
     }
@@ -748,11 +805,19 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 WINDOW.with_borrow_mut(|w| {
                     let Some(w) = w else { return };
                     let (x, y) = to_content(w, lparam);
-                    if let Some((r, Act::Threshold)) = w.hits.iter().find(|(r, _)| contains(r, x, y)).cloned() {
-                        let track = rect(r.left + 10.0, r.top, r.right - r.left - 20.0, r.bottom - r.top);
-                        w.dragging = Some(track);
-                        SetCapture(hwnd);
-                        drag_threshold(w, x, track);
+                    match w.hits.iter().find(|(r, _)| contains(r, x, y)).cloned() {
+                        Some((r, Act::Threshold)) => {
+                            let track = rect(r.left + 10.0, r.top, r.right - r.left - 20.0, r.bottom - r.top);
+                            w.dragging = Some(track);
+                            SetCapture(hwnd);
+                            drag_threshold(w, x, track);
+                        }
+                        Some((_, Act::Drag(id))) => {
+                            w.drag_device = Some((id, y));
+                            SetCapture(hwnd);
+                            let _ = InvalidateRect(hwnd, None, false);
+                        }
+                        _ => {}
                     }
                 });
                 LRESULT(0)
@@ -764,8 +829,19 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                     if let Some(track) = w.dragging {
                         drag_threshold(w, x, track);
                     }
-                    let over = w.dragging.is_some() || w.hits.iter().any(|(r, _)| contains(r, x, y));
-                    SetCursor(LoadCursorW(None, if over { IDC_HAND } else { IDC_ARROW }).unwrap_or_default());
+                    if let Some((_, drag_y)) = w.drag_device.as_mut() {
+                        *drag_y = y;
+                        let _ = InvalidateRect(hwnd, None, false);
+                    }
+                    let on_handle = w.hits.iter().any(|(r, a)| matches!(a, Act::Drag(_)) && contains(r, x, y));
+                    let cursor = if w.drag_device.is_some() || on_handle {
+                        IDC_SIZENS
+                    } else if w.dragging.is_some() || w.hits.iter().any(|(r, _)| contains(r, x, y)) {
+                        IDC_HAND
+                    } else {
+                        IDC_ARROW
+                    };
+                    SetCursor(LoadCursorW(None, cursor).unwrap_or_default());
                 });
                 LRESULT(0)
             }
@@ -774,6 +850,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                     let Some(w) = w else { return };
                     if w.dragging.take().is_some() {
                         let _ = ReleaseCapture();
+                        return;
+                    }
+                    if let Some((id, drag_y)) = w.drag_device.take() {
+                        let _ = ReleaseCapture();
+                        drop_device(w, &id, drag_y);
                         return;
                     }
                     let (x, y) = to_content(w, lparam);

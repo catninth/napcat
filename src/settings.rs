@@ -47,6 +47,8 @@ pub struct Settings {
     pub custom: Vec<CustomDevice>,
     /// Eszköztípus felülírása (eszköz id, típus): "keyboard", "mouse", "headset", "controller", "other".
     pub kinds: Vec<(String, String)>,
+    /// Az eszközök sorrendje (tálca, panel, listák); ami nincs benne, a végére kerül.
+    pub order: Vec<String>,
     /// Lemerülés figyelmeztetés a küszöbnél (és 5%-nál).
     pub notify_low: bool,
     /// A lemerülés figyelmeztetés küszöbe (%), 5-30.
@@ -84,6 +86,7 @@ impl Default for Settings {
             removed: Vec::new(),
             custom: Vec::new(),
             kinds: Vec::new(),
+            order: Vec::new(),
             notify_low: true,
             low_threshold: 15,
             notify_full: true,
@@ -161,6 +164,7 @@ impl Settings {
                 "hidden" => s.hidden = parse_list(value),
                 "removed" => s.removed = parse_list(value),
                 "custom" => s.custom = parse_list(value).iter().filter_map(|v| CustomDevice::decode(v)).collect(),
+                "order" => s.order = parse_list(value),
                 "kinds" => {
                     s.kinds = parse_list(value).iter().filter_map(|v| v.split_once('=').map(|(a, b)| (a.to_string(), b.to_string()))).collect()
                 }
@@ -180,13 +184,14 @@ impl Settings {
         let removed = list(self.removed.clone());
         let custom_devices = list(self.custom.iter().map(CustomDevice::encode).collect());
         let kinds = list(self.kinds.iter().map(|(id, k)| format!("{id}={k}")).collect());
+        let order = list(self.order.clone());
         let q = |s: &str| format!("\"{}\"", s.replace('"', ""));
         let accent = self.custom_accent.map_or("\"\"".to_string(), |c| format!("\"#{c:06X}\""));
         let text = format!(
             "# NapCat beállítások\n\
              notify_low = {}\nlow_threshold = {}\nnotify_full = {}\nquiet_fullscreen = {}\n\
              tray_mode = {}\nicon_style = {}\ntheme = {}\nuse_accent = {}\ncustom_accent = {}\nring_accent = {}\n\
-             poll_secs = {}\nupdate_mode = {}\npin_tip_shown = {}\nflyout_grid = {}\nhidden = [{}]\nremoved = [{}]\ncustom = [{}]\nkinds = [{}]\n",
+             poll_secs = {}\nupdate_mode = {}\npin_tip_shown = {}\nflyout_grid = {}\nhidden = [{}]\nremoved = [{}]\ncustom = [{}]\nkinds = [{}]\norder = [{}]\n",
             self.notify_low,
             self.low_threshold,
             self.notify_full,
@@ -204,7 +209,8 @@ impl Settings {
             hidden,
             removed,
             custom_devices,
-            kinds
+            kinds,
+            order
         );
         let _ = std::fs::write(path, text);
     }
