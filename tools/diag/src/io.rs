@@ -65,6 +65,22 @@ impl Dev {
     }
 }
 
+impl Dev {
+    /// Feature report küldése (az első bájt a report ID).
+    pub fn set_feature(&self, buf: &[u8]) -> bool {
+        use windows::Win32::Devices::HumanInterfaceDevice::HidD_SetFeature;
+        unsafe { HidD_SetFeature(self.h, buf.as_ptr() as *const std::ffi::c_void, buf.len() as u32).as_bool() }
+    }
+
+    /// Feature report lekérése (`len` bájt a report ID-vel együtt).
+    pub fn get_feature(&self, id: u8, len: usize) -> Option<Vec<u8>> {
+        use windows::Win32::Devices::HumanInterfaceDevice::HidD_GetFeature;
+        let mut buf = vec![0u8; len];
+        buf[0] = id;
+        unsafe { HidD_GetFeature(self.h, buf.as_mut_ptr() as *mut std::ffi::c_void, len as u32).as_bool().then_some(buf) }
+    }
+}
+
 impl Drop for Dev {
     fn drop(&mut self) {
         unsafe {

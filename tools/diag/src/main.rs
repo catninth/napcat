@@ -31,19 +31,46 @@ const NAME: DEVPROPKEY = DEVPROPKEY {
 mod compx;
 mod io;
 mod listen;
+mod mchose;
 mod via;
 
 fn main() {
+    if double_clicked() {
+        return report();
+    }
     match std::env::args().nth(1).as_deref() {
         Some("via") => unsafe { via::run() },
         Some("compx") => unsafe { compx::run() },
+        Some("mchose") => print!("{}", unsafe { mchose::run() }),
         Some("listen") => {
             let secs = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(15);
             unsafe { listen::run(secs) }
         }
         None => list(),
-        Some(_) => println!("használat: napcat-diag [via | compx | listen [mp]]"),
+        Some(_) => println!("használat: napcat-diag [via | compx | mchose | listen [mp]]"),
     }
+}
+
+/// Intézőből indítva (dupla katt) a konzol csak ehhez a folyamathoz tartozik.
+fn double_clicked() -> bool {
+    let mut ids = [0u32; 2];
+    std::env::args().len() == 1 && unsafe { windows::Win32::System::Console::GetConsoleProcessList(&mut ids) } == 1
+}
+
+/// Dupla kattos mód: MCHOSE lekérdezés, az eredmény az exe melletti napcat-diag.txt-be is
+/// (ha oda nem írható, az Asztalra), a végén Enterre vár, hogy az ablak ne tűnjön el.
+fn report() {
+    println!("NapCat diagnosztika. Mozgasd az egeret, amíg fut (legfeljebb fél perc)...\n");
+    let text = unsafe { mchose::run() };
+    println!("{text}");
+    let beside = std::env::current_exe().ok().and_then(|p| Some(p.parent()?.join("napcat-diag.txt")));
+    let desktop = std::env::var_os("USERPROFILE").map(|h| std::path::Path::new(&h).join("Desktop").join("napcat-diag.txt"));
+    match [beside, desktop].into_iter().flatten().find(|p| std::fs::write(p, &text).is_ok()) {
+        Some(p) => println!("Elmentve: {}\nEzt a fájlt küldd vissza.", p.display()),
+        None => println!("A fájlt nem sikerült elmenteni; másold ki a fenti szöveget."),
+    }
+    println!("\nEnter a bezáráshoz.");
+    let _ = std::io::stdin().read_line(&mut String::new());
 }
 
 fn list() {
@@ -141,6 +168,7 @@ pub struct HidInfo {
     pub usage: u16,
     pub in_len: u16,
     pub out_len: u16,
+    pub feat_len: u16,
 }
 
 pub unsafe fn hid_info(path: &[u16]) -> Option<HidInfo> {
@@ -166,6 +194,7 @@ pub unsafe fn hid_info(path: &[u16]) -> Option<HidInfo> {
         usage: caps.Usage,
         in_len: caps.InputReportByteLength,
         out_len: caps.OutputReportByteLength,
+        feat_len: caps.FeatureReportByteLength,
     })
 }
 

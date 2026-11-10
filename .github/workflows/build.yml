@@ -24,7 +24,7 @@ jobs:
           "version=$cargo" >> $env:GITHUB_OUTPUT
 
       - name: Build
-        run: cargo build --release --locked -p napcat
+        run: cargo build --release --locked -p napcat -p napcat-diag
 
       - name: Test
         run: cargo test --release --locked -p napcat
@@ -44,4 +44,5 @@ jobs:
           name: NapCat-${{ steps.version.outputs.version }}-${{ github.sha }}
           path: |
             target/release/napcat.exe
+            target/release/napcat-diag.exe
             target/installer/NapCat-Setup-*.exe

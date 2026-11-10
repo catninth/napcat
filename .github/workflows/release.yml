@@ -26,7 +26,7 @@ jobs:
           "version=$version" >> $env:GITHUB_OUTPUT
 
       - name: Build
-        run: cargo build --release --locked -p napcat
+        run: cargo build --release --locked -p napcat -p napcat-diag
 
       - name: Installer
         shell: pwsh
@@ -45,6 +45,7 @@ jobs:
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item "target\installer\NapCat-Setup-$v.exe" dist\
           Copy-Item target\release\napcat.exe dist\NapCat.exe
+          Copy-Item target\release\napcat-diag.exe dist\NapCat-Diag.exe
           foreach ($f in Get-ChildItem dist\*.exe) {
             $hash = (Get-FileHash $f -Algorithm SHA256).Hash.ToLower()
             "$hash  $($f.Name)" | Out-File -Encoding ascii -NoNewline "$($f.FullName).sha256"
