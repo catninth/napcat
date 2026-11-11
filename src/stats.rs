@@ -4,7 +4,9 @@
 //! Egy sor: `<unix mp> <kód> <szint|-> <eszköz id>`. Kód: `d` merül, `c` tölt, `f` feltöltve,
 //! `u` ismeretlen, `x` nincs csatlakoztatva. A `<mp> B - *` sor szakadás (a NapCat indult, vagy a
 //! gép alvó állapotba ment / felébredt): előtte és utána mért értékek között nem tudjuk, mi történt,
-//! ezért a számítások ott megszakítják a szakaszt.
+//! ezért a számítások ott megszakítják a szakaszt. A `<mp> H - *` sor jelzés, hogy a NapCat még fut
+//! (az utolsó szintek eddig érvényesek), az `<mp> E - *` ugyanez, majd szakadás (kilépés, alvás).
+//! Ezek nélkül a ritkán változó szint a grafikonon csak pont lenne a következő szakadásig.
 //!
 //! Csak változáskor írunk, így egy eszköz néhány száz sort ad naponta (kb. 1 MB évente).
 
@@ -77,10 +79,21 @@ pub fn start() {
     gap();
 }
 
-/// Szakadás a naplóban (indulás, alvás, ébredés); utána minden eszköz állapota újra beíródik.
+/// Szakadás a naplóban (indulás, ébredés); utána minden eszköz állapota újra beíródik.
 pub fn gap() {
     LOGGED.with_borrow_mut(|m| m.clear());
     append(&format!("{} B - *\n", now()));
+}
+
+/// A NapCat még fut: a naplózott szintek eddig érvényesek (időzítőről, néhány percenként).
+pub fn heartbeat() {
+    append(&format!("{} H - *\n", now()));
+}
+
+/// Kilépés vagy alvás: a szintek eddig érvényesek, utána szakadás.
+pub fn end() {
+    LOGGED.with_borrow_mut(|m| m.clear());
+    append(&format!("{} E - *\n", now()));
 }
 
 fn code(d: &DeviceState) -> u8 {
@@ -126,12 +139,28 @@ pub fn parse(text: &str) -> HashMap<String, Vec<Sample>> {
         let (Some(t), Some(code), Some(level), Some(id)) = (parts.next(), parts.next(), parts.next(), parts.next()) else { continue };
         let Ok(t) = t.parse::<i64>() else { continue };
         let code = code.bytes().next().unwrap_or(b'u');
-        if code == b'B' {
+        if code == b'H' || code == b'E' {
+            // Az utolsó ismert szint eddig tartott: `h` minta (csak a grafikonnak); egymás után
+            // csak a legutóbbi marad.
             for v in out.values_mut() {
-                if v.last().is_some_and(|s| s.code != b'B') {
-                    v.push(Sample { t, level: NONE, code });
+                match v.last_mut() {
+                    Some(last) if last.code == b'h' => last.t = t,
+                    Some(last) if last.known() => {
+                        let level = last.level;
+                        v.push(Sample { t, level, code: b'h' });
+                    }
+                    _ => {}
                 }
             }
+        }
+        if code == b'B' || code == b'E' {
+            for v in out.values_mut() {
+                if v.last().is_some_and(|s| s.code != b'B') {
+                    v.push(Sample { t, level: NONE, code: b'B' });
+                }
+            }
+        }
+        if matches!(code, b'B' | b'E' | b'H') {
             continue;
         }
         let level = level.parse::<u8>().map_or(NONE, |l| l.min(100));
@@ -185,7 +214,7 @@ pub fn runs(samples: &[Sample]) -> Vec<Run> {
             }
         }
     };
-    for s in samples {
+    for s in samples.iter().filter(|s| s.code != b'h') {
         match kind(s) {
             None => close(&mut cur, &mut out),
             Some(k) => match &mut cur {
@@ -226,6 +255,7 @@ pub fn daily(samples: &[Sample], day_starts: &[i64]) -> Vec<(f32, bool)> {
         let i = day_starts.partition_point(|&d| d <= t);
         (i > 0 && t < day_starts[i - 1] + 86400).then(|| i - 1)
     };
+    let samples: Vec<Sample> = samples.iter().filter(|s| s.code != b'h').copied().collect();
     for pair in samples.windows(2) {
         let (a, b) = (pair[0], pair[1]);
         if let Some(i) = day_of(b.t) {
@@ -246,48 +276,52 @@ pub fn daily(samples: &[Sample], day_starts: &[i64]) -> Vec<(f32, bool)> {
     out
 }
 
-/// A grafikon vonalai a [from, to] időszakra: összefüggő, ismert szintű szakaszok (idő, szint).
-/// Az időszak előtti utolsó ismert szint a `from`-tól indul; ha a napló ismert szinttel ér
-/// véget, az a `to`-ig tart (azóta nem változott).
-pub fn segments(samples: &[Sample], from: i64, to: i64) -> Vec<Vec<(i64, u8)>> {
+/// A grafikon vonala a [from, to] időszakra: az ismert szintű minták (idő, szint), szakadásokon
+/// és leválasztásokon át is összekötve. Az időszak előtti utolsó ismert szint a `from`-tól
+/// indul; ha a napló ismert szinttel ér véget, az a `to`-ig tart (azóta nem változott).
+/// A harmadik érték: töltőn volt-e (tölt vagy feltöltve) a pont után következő szakaszban.
+pub fn segments(samples: &[Sample], from: i64, to: i64) -> Vec<(i64, u8, bool)> {
     let mut out = Vec::new();
-    let mut cur: Vec<(i64, u8)> = Vec::new();
-    let mut prev: Option<Sample> = None;
-    for s in samples {
-        if s.t > to {
-            break;
+    let mut before = None;
+    let mut last = None;
+    // A `h` minta csak a szintet viszi tovább, az állapotot az előző valódi mintától örökli.
+    let mut charging = false;
+    for s in samples.iter().take_while(|s| s.t <= to) {
+        last = Some(*s);
+        if !s.known() {
+            continue;
         }
-        if s.t >= from {
-            if cur.is_empty() {
-                if let Some(p) = prev.filter(|p| p.known() && p.t < from) {
-                    cur.push((from, p.level));
-                }
-            }
-            if s.known() {
-                cur.push((s.t, s.level));
-            } else if !cur.is_empty() {
-                out.push(std::mem::take(&mut cur));
-            }
+        if s.code != b'h' {
+            charging = matches!(s.code, b'c' | b'f');
         }
-        prev = Some(*s);
-    }
-    if cur.is_empty() {
-        if let Some(p) = prev.filter(|p| p.known() && p.t < from) {
-            cur.push((from, p.level));
+        if s.t < from {
+            before = Some((s.level, charging));
+        } else {
+            out.push((s.t, s.level, charging));
         }
     }
-    if let Some(&(_, level)) = cur.last() {
-        if prev.is_some_and(|p| p.known()) {
-            cur.push((to, level));
+    if let Some((level, charging)) = before {
+        out.insert(0, (from, level, charging));
+    }
+    if let Some(&(t, level, charging)) = out.last() {
+        if t < to && last.is_some_and(|s| s.known()) {
+            out.push((to, level, charging));
         }
-        out.push(cur);
     }
     out
 }
 
-/// A szint `t`-kor a szakaszokból (két minta között egyenesen), ha van adat.
-pub fn level_at(segments: &[Vec<(i64, u8)>], t: i64) -> Option<f32> {
-    let seg = segments.iter().find(|s| s.first().is_some_and(|f| f.0 <= t) && s.last().is_some_and(|l| l.0 >= t))?;
+/// Töltőn volt-e `t`-kor (a vonal `t` előtti pontja szerint).
+pub fn charging_at(seg: &[(i64, u8, bool)], t: i64) -> bool {
+    let i = seg.partition_point(|p| p.0 <= t);
+    seg.get(i.saturating_sub(1)).is_some_and(|p| p.2)
+}
+
+/// A szint `t`-kor a vonalról (két minta között egyenesen), ha van ott adat.
+pub fn level_at(seg: &[(i64, u8, bool)], t: i64) -> Option<f32> {
+    if !(seg.first()?.0 <= t && seg.last()?.0 >= t) {
+        return None;
+    }
     let i = seg.partition_point(|p| p.0 <= t);
     let a = seg[i.saturating_sub(1)];
     let Some(&b) = seg.get(i) else { return Some(a.1 as f32) };
@@ -398,6 +432,14 @@ mod tests {
         let m = parse(log);
         assert_eq!(m["mouse 1"], vec![s(100, 80, b'd'), s(200, 79, b'd'), s(250, NONE, b'B'), s(400, NONE, b'x')]);
         assert_eq!(m["kb"], vec![s(300, 50, b'c')]);
+
+        // H: a szint eddig tartott (egymás utáni H-kból egy minta), E: utána szakadás.
+        let m = parse("100 d 80 m\n200 H - *\n300 H - *\n400 E - *\n500 B - *\n600 x - m\n700 H - *\n");
+        assert_eq!(m["m"], vec![s(100, 80, b'd'), s(400, 80, b'h'), s(400, NONE, b'B'), s(600, NONE, b'x')]);
+        assert_eq!(segments(&m["m"], 0, 800), vec![(100, 80, false), (400, 80, false)]);
+        // A statisztikákat a `h` minta nem befolyásolja.
+        let r = runs(&[s(0, 90, b'd'), s(10, 80, b'd'), s(5000, 80, b'h')]);
+        assert_eq!(r[0].end, 10);
     }
 
     #[test]
@@ -460,11 +502,17 @@ mod tests {
     fn chart_segments() {
         let samples = [s(50, 90, b'd'), s(150, 80, b'd'), s(200, NONE, b'B'), s(300, 70, b'd'), s(400, 60, b'd')];
         let seg = segments(&samples, 100, 500);
-        assert_eq!(seg, vec![vec![(100, 90), (150, 80)], vec![(300, 70), (400, 60), (500, 60)]]);
+        // A szakadáson át is összekötve.
+        assert_eq!(seg, vec![(100, 90, false), (150, 80, false), (300, 70, false), (400, 60, false), (500, 60, false)]);
         assert_eq!(level_at(&seg, 350), Some(65.0));
-        assert_eq!(level_at(&seg, 250), None);
+        assert_eq!(level_at(&seg, 225), Some(75.0));
+        assert_eq!(level_at(&seg, 50), None);
         // Csak az időszak előtti adat: vízszintes vonal.
-        assert_eq!(segments(&samples[3..], 450, 500), vec![vec![(450, 60), (500, 60)]]);
+        assert_eq!(segments(&samples[3..], 450, 500), vec![(450, 60, false), (500, 60, false)]);
+        // Töltés és feltöltve: töltőn; a `h` minta az előző állapotot viszi tovább.
+        let seg = segments(&[s(0, 50, b'd'), s(10, 60, b'c'), s(20, 100, b'f'), s(30, 100, b'h'), s(40, 99, b'd')], 0, 40);
+        assert_eq!(seg.iter().map(|p| p.2).collect::<Vec<_>>(), vec![false, true, true, true, false]);
+        assert!(charging_at(&seg, 15) && !charging_at(&seg, 5) && !charging_at(&seg, 45));
     }
 
     #[test]

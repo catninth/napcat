@@ -194,22 +194,26 @@ impl Ui<'_> {
         }
         y += 44.0 + 20.0;
 
-        // Az időszak: a mai nappal együtt `days` naptári nap (helyi idő szerint).
+        // Az időszak: a mai nappal együtt `days` naptári nap (helyi idő szerint), de csak az első
+        // adat napjától, hogy kevés adatnál ne üres hely legyen a grafikonok nagy része.
         let samples = &data.log[&sel.id];
         let runs = stats::runs(samples);
         let (now, off) = (data.now, data.offset);
         let today = (now + off).div_euclid(86400);
-        let days = view.range.max(1) as i64;
+        let first = samples.iter().find(|s| s.known()).map_or(now, |s| s.t);
+        let first_day = (first + off).div_euclid(86400);
+        let days = (view.range.max(1) as i64).min(today - first_day + 1).max(1);
         let day0 = today - days + 1;
         let day_starts: Vec<i64> = (0..days).map(|k| (day0 + k) * 86400 - off).collect();
         let from = day_starts[0];
-        let span = (days * 86400) as f32;
+        // A töltöttség grafikon az első adattól (vagy az időszak elejétől) mostanáig tart.
+        let line_from = from.max(first);
+        let span = (now - line_from).max(3600) as f32;
         let daily = stats::daily(samples, &day_starts);
         let drain = stats::rate(&runs, from, false);
         let charge = stats::rate(&runs, now - 90 * 86400, true);
         let data_days = daily.iter().filter(|d| d.1).count();
         let avg_daily = (data_days > 0).then(|| daily.iter().map(|d| d.0).sum::<f32>() / data_days as f32).filter(|&v| v >= 0.5);
-        let first = samples.iter().find(|s| s.known()).map_or(now, |s| s.t);
 
         // Összesítő kártyák.
         let dash = || "–".to_string();
@@ -240,8 +244,9 @@ impl Ui<'_> {
             },
             {
                 let c = stats::cycles(&runs);
-                let since = t("az első indítás óta", "since first launch").to_string();
-                Kpi { label: t("Töltési ciklusok", "Charge cycles"), value: num(c, if c < 10.0 { 1 } else { 0 }), unit: t("db", "").into(), sub: since }
+                // Egyenértékű teljes ciklusok: töltés nélkül is nő, ezért az alcím elmagyarázza.
+                let sub = t("100% merülés = 1 ciklus", "100% discharge = 1 cycle").to_string();
+                Kpi { label: t("Ciklusok", "Cycles"), value: num(c, if c < 10.0 { 1 } else { 0 }), unit: String::new(), sub }
             },
         ];
         let kw = (W - 2.0 * MARGIN - 3.0 * 8.0) / 4.0;
@@ -257,8 +262,8 @@ impl Ui<'_> {
         y += 100.0 + 20.0;
 
         let (l, r) = (MARGIN + PAD + AXIS, W - MARGIN - PAD);
-        let px = |t: i64| l + (r - l) * ((t - from) as f32 / span).clamp(0.0, 1.0);
-        let t_at = |x: f32| from + (((x - l) / (r - l)).clamp(0.0, 1.0) * span) as i64;
+        let px = |t: i64| l + (r - l) * ((t - line_from) as f32 / span).clamp(0.0, 1.0);
+        let t_at = |x: f32| line_from + (((x - l) / (r - l)).clamp(0.0, 1.0) * span) as i64;
         // Napfeliratok: 7 napnál a hét napjai, 30 napnál hetente a dátum, a végén "ma".
         let day_label = |k: i64| {
             let day = day0 + k;
@@ -277,7 +282,7 @@ impl Ui<'_> {
         let top = y + 16.0 + 20.0 + 10.0;
         let (ct, cb) = (top + 12.0, top + 168.0);
         let py = |v: f32| cb - (cb - ct) * v / 100.0;
-        let segs = stats::segments(samples, from, now.min(from + days * 86400));
+        let segs = stats::segments(samples, line_from, now);
         let hx = self.zone(rect(l, ct - 12.0, r - l, cb - ct + 24.0));
         let readout = match hx {
             Some(x) => {
@@ -300,23 +305,41 @@ impl Ui<'_> {
         if segs.is_empty() {
             self.p.text(t("Nincs adat ebben az időszakban", "No data in this period"), 12.5, DWRITE_FONT_WEIGHT_NORMAL, rect(l, ct, r - l, cb - ct), sub, DWRITE_TEXT_ALIGNMENT_CENTER)?;
         }
-        for seg in &segs {
-            let pts: Vec<(f32, f32)> = seg.iter().map(|&(t, v)| (px(t), py(v as f32))).collect();
-            self.p.area(&pts, cb, fade(accent, 0.12))?;
-            self.p.polyline(&pts, 2.0, accent, &[])?;
-            if pts.len() == 1 {
-                self.p.circle(pts[0].0, pts[0].1, 2.0, accent)?;
+        // Színes módban a merülő szakaszok pirosak, a töltőn töltöttek zöldek; egyébként kiemelő szín.
+        let colors = self.theme.chart_colors();
+        let color_of = |charging: bool| colors.map_or(accent, |(drain, charge)| if charging { charge } else { drain });
+        let pts: Vec<(f32, f32)> = segs.iter().map(|&(t, v, _)| (px(t), py(v as f32))).collect();
+        if pts.len() > 1 {
+            // Azonos állapotú szomszédos szakaszok egy vonalba (és kitöltésbe) kerülnek.
+            let mut start = 0;
+            while start < pts.len() - 1 {
+                let state = segs[start].2;
+                let mut end = start + 1;
+                while end < pts.len() - 1 && segs[end].2 == state {
+                    end += 1;
+                }
+                let c = color_of(state);
+                self.p.area(&pts[start..=end], cb, fade(c, 0.12))?;
+                self.p.polyline(&pts[start..=end], 2.0, c, &[])?;
+                start = end;
             }
+        } else if let (Some(&(x, y)), Some(p)) = (pts.first(), segs.first()) {
+            self.p.circle(x, y, 2.5, color_of(p.2))?;
         }
+        // Napfeliratok a nap látható részének közepén; a csak kis részben látszó első nap
+        // felirata elmarad, hogy ne lógjon rá a következőre.
         for &k in &label_days {
-            let x = (px(day_starts[k as usize]) + px(day_starts[k as usize] + 86400)) / 2.0;
-            self.tick(x, top + 190.0, &day_label(k))?;
+            let (a, b) = (day_starts[k as usize].max(line_from), (day_starts[k as usize] + 86400).min(now));
+            if b <= a || (b - a < 6 * 3600 && label_days.len() > 1 && k == 0) {
+                continue;
+            }
+            self.tick((px(a) + px(b)) / 2.0, top + 190.0, &day_label(k))?;
         }
         if let Some(x) = hx {
             self.p.line(x, ct, x, cb, self.theme.fg(0.3))?;
             if let Some(v) = stats::level_at(&segs, t_at(x)) {
                 self.p.circle(x, py(v), 6.0, self.theme.row())?;
-                self.p.circle(x, py(v), 4.5, accent)?;
+                self.p.circle(x, py(v), 4.5, color_of(stats::charging_at(&segs, t_at(x))))?;
             }
         }
         y += 16.0 + 20.0 + 10.0 + 200.0 + 6.0 + 20.0;
@@ -327,7 +350,7 @@ impl Ui<'_> {
         let max = daily.iter().map(|d| d.0).fold(0.0f32, f32::max);
         let bmax = ((max / 20.0).ceil() * 20.0).max(20.0);
         let slot = (r - l) / days as f32;
-        let bw = (slot * if days <= 7 { 0.5 } else { 0.62 }).max(4.0);
+        let bw = (slot * if days <= 7 { 0.5 } else { 0.62 }).clamp(4.0, 48.0);
         let hover_bar = self.zone(rect(l, bt, r - l, bb - bt + 24.0)).map(|x| (((x - l) / slot) as usize).min(days as usize - 1));
         let readout = match hover_bar {
             Some(k) => {

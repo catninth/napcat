@@ -155,6 +155,9 @@ const QUIET_TIMER: usize = 1;
 /// A "Szólj 30 perc múlva" szundik ellenőrzése percenként, amíg van várakozó.
 const SNOOZE_TIMER: usize = 2;
 const SNOOZE: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+/// Az előzmények naplójába ennyi időnként "még fut" jelzés, hogy a grafikon vonala kitartson.
+const HISTORY_TIMER: usize = 3;
+const HISTORY_MS: u32 = 10 * 60_000;
 
 /// Alap GUID; eszközönként ebből és az eszköz azonosítójából képzünk stabil GUID-ot, hogy a
 /// Windows megjegyezze, melyik ikon van kitűzve. A GUID az exe útvonalához kötődik, ezért ha egy
@@ -620,6 +623,7 @@ pub unsafe fn run(hinst: HINSTANCE) -> Result<()> {
     crate::i18n::set(&Settings::load().language);
     // Az előzmények naplója: szakadás az előző futás óta (és a túl nagy napló rövidítése).
     crate::stats::start();
+    let _ = SetTimer(hwnd, HISTORY_TIMER, HISTORY_MS, None);
     APP.set(Some(App {
         devices: Vec::new(),
         placeholder: TrayIcon::placeholder(),
@@ -991,6 +995,17 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 with_app(|app| app.check_snoozed(hwnd));
                 LRESULT(0)
             }
+            WM_TIMER if wparam.0 == HISTORY_TIMER => {
+                crate::stats::heartbeat();
+                LRESULT(0)
+            }
+            // Kijelentkezés vagy leállítás: a szintek eddig érvényesek.
+            WM_ENDSESSION => {
+                if wparam.0 != 0 {
+                    crate::stats::end();
+                }
+                LRESULT(0)
+            }
             WM_TOAST => {
                 on_toast(hwnd);
                 LRESULT(0)
@@ -1002,8 +1017,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             WM_POWERBROADCAST => {
                 match wparam.0 as u32 {
                     PBT_POWERSETTINGCHANGE => on_power_setting(lparam),
-                    // Alvás és ébredés: szakadás az előzményekben (a Statisztika ott nem számol).
-                    PBT_APMSUSPEND | PBT_APMRESUMEAUTOMATIC => crate::stats::gap(),
+                    // Alvás és ébredés: szakadás az előzményekben (a Statisztika ott nem számol);
+                    // elalváskor a szintek addig még érvényesek.
+                    PBT_APMSUSPEND => crate::stats::end(),
+                    PBT_APMRESUMEAUTOMATIC => crate::stats::gap(),
                     _ => {}
                 }
                 LRESULT(1)
@@ -1022,6 +1039,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 DefWindowProcW(hwnd, msg, wparam, lparam)
             }
             WM_DESTROY => {
+                crate::stats::end();
                 with_app(|app| {
                     for icon in app.icons_mut() {
                         icon.remove(hwnd);

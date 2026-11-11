@@ -170,6 +170,16 @@ impl Theme {
         self.fg(if self.light { 0.14 } else { 0.18 })
     }
 
+    /// A töltöttség grafikon színei (merül, töltőn): színes módban piros és zöld; ha a gyűrű a
+    /// kiemelő színt használja ("Rendben állapot a kiemelő színnel"), a grafikon is egyszínű.
+    pub fn chart_colors(&self) -> Option<(D2D1_COLOR_F, D2D1_COLOR_F)> {
+        if RING_ACCENT.load(Ordering::Relaxed) {
+            return None;
+        }
+        let green = if self.light { 0x16A34A } else { 0x4ADE80 };
+        Some((self.red(), rgb(green, 1.0)))
+    }
+
     /// Gyűrű szín: 50% felett zöld, 20–49% borostyán, 20% alatt piros, töltés kék,
     /// nincs kapcsolat vagy ismeretlen szint szürke.
     pub fn ring(&self, dev: &DeviceState) -> D2D1_COLOR_F {
