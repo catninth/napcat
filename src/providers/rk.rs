@@ -69,12 +69,21 @@ fn read(i: &HidInterface) -> Option<(u8, ChargeState)> {
     None
 }
 
+/// A firmware a modul szintjét induláskor 100-ra állítja, és csak a modul első válasza (≈3 mp)
+/// után lesz valódi: ébredés után ezért egy merülő 100% lehet helyőrző. Ha előtte nem 100 volt,
+/// csak egy későbbi, ugyanilyen olvasás után fogadjuk el.
+fn needs_confirm(fresh: (u8, ChargeState), last: Option<(u8, ChargeState)>) -> bool {
+    fresh == (100, ChargeState::Discharging) && last.map_or(true, |(l, _)| l != 100)
+}
+
 #[derive(Default)]
 pub struct Rk {
     seen: bool,
     present: bool,
     /// Az utolsó ismert szint (alvó billentyűzetnél ez marad).
     last: Option<(u8, ChargeState)>,
+    /// Megerősítésre váró olvasás (lásd `needs_confirm`).
+    pending: Option<(u8, ChargeState)>,
 }
 
 impl Provider for Rk {
@@ -92,7 +101,12 @@ impl Provider for Rk {
         self.seen = true;
         let via = all.iter().find(|i| i.vid == RK && i.pid == R75_PRO && i.usage_page == 0xFF60 && i.usage == 0x61);
         if let Some(fresh) = via.and_then(read) {
-            self.last = Some(fresh);
+            if needs_confirm(fresh, self.last) && self.pending != Some(fresh) {
+                self.pending = Some(fresh);
+            } else {
+                self.last = Some(fresh);
+                self.pending = None;
+            }
         }
         let (level, charge) = match (self.last, link) {
             (Some((l, c)), _) => (Some(l), c),
@@ -110,8 +124,9 @@ impl Provider for Rk {
     }
 
     /// Ritkán: a billentyűzet a kérésre felébredhet, és alvás közben nem merül a szint gyorsan.
+    /// Megerősítésre váró olvasásnál hamar újra.
     fn poll_interval(&self) -> Option<Duration> {
-        self.present.then_some(Duration::from_secs(300))
+        self.present.then_some(Duration::from_secs(if self.pending.is_some() { 10 } else { 300 }))
     }
 }
 
@@ -126,6 +141,16 @@ mod tests {
         assert_eq!(parse(&[0x08, 0x00, 0x05, 97, 2]), Some((100, ChargeState::Full)));
         assert_eq!(parse(&[0xFF, 0x00, 0x05, 0, 0]), None); // gyári firmware
         assert_eq!(parse(&[0x08, 0x00, 0x01, 7]), None); // más érték válasza
+    }
+
+    #[test]
+    fn wake_placeholder() {
+        use ChargeState::*;
+        assert!(needs_confirm((100, Discharging), Some((97, Discharging)))); // ébredés utáni helyőrző
+        assert!(needs_confirm((100, Discharging), None));
+        assert!(!needs_confirm((100, Discharging), Some((100, Full)))); // lehúzott, feltöltött billentyűzet
+        assert!(!needs_confirm((96, Discharging), Some((97, Discharging))));
+        assert!(!needs_confirm((100, Full), Some((97, Charging))));
     }
 
     /// A billentyűzeten futó kiosztás (VIA id_dynamic_keymap_get_keycode, csak olvas): hol van a
