@@ -47,7 +47,7 @@ const ID_EXIT: usize = 100;
 const ID_AUTOSTART: usize = 101;
 const ID_SETTINGS: usize = 102;
 const ID_HIDE: usize = 103;
-pub const ID_UPDATE: usize = 104;
+const ID_UPDATE: usize = 104;
 const ID_STATS: usize = 105;
 const ID_SHOW_BASE: usize = 200;
 
@@ -58,6 +58,9 @@ pub static INSTALLING: AtomicBool = AtomicBool::new(false);
 pub const WM_UPDATE_CHECK: u32 = WM_APP + 8;
 /// A kézi keresés véget ért (a beállítások ablak újrarajzolásához).
 const WM_UPDATE_CHECKED: u32 = WM_APP + 9;
+/// Telepítés kérése a beállítások ablakból (a menü a parancsot közvetlenül kapja, TPM_RETURNCMD,
+/// ezért ennek az ablaknak nincs WM_COMMAND ága).
+pub const WM_UPDATE_INSTALL: u32 = WM_APP + 11;
 static READY: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 /// Új verzió érkezett: automatikus módban telepít, különben értesít.
@@ -956,6 +959,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             }
             WM_UPDATE_CHECK => {
                 start_check(hwnd);
+                LRESULT(0)
+            }
+            WM_UPDATE_INSTALL => {
+                start_install(hwnd);
                 LRESULT(0)
             }
             WM_UPDATE_CHECKED => {

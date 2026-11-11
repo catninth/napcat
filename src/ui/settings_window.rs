@@ -418,7 +418,7 @@ unsafe fn on_act(w: &mut Window, act: Act) {
             return;
         }
         Act::InstallUpdate => {
-            let _ = PostMessageW(w.owner, WM_COMMAND, WPARAM(tray::ID_UPDATE), LPARAM(0));
+            let _ = PostMessageW(w.owner, tray::WM_UPDATE_INSTALL, WPARAM(0), LPARAM(0));
             return;
         }
         // A Statisztika választásai nem beállítások: nem mentődnek.
