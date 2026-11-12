@@ -213,6 +213,14 @@ fn candidates_for(devices: &[DeviceState]) -> Vec<Candidate> {
 }
 
 /// Friss eszközlista egy nyitott ablaknak.
+/// Kilépéskor: az ablak nem a tálcaablak tulajdona, így magától nem zárul be. Ha nyitva maradna,
+/// a D2D erőforrásai a folyamat lebontásakor szabadulnának fel, és az összeomlik.
+pub unsafe fn close() {
+    if let Some(hwnd) = WINDOW.with_borrow(|w| w.as_ref().map(|w| w.hwnd)) {
+        let _ = DestroyWindow(hwnd);
+    }
+}
+
 pub unsafe fn update_devices(devices: &[DeviceState]) {
     WINDOW.with_borrow_mut(|w| {
         if let Some(w) = w {

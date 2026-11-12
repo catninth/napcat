@@ -1047,6 +1047,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             }
             WM_DESTROY => {
                 crate::stats::end();
+                // A többi ablak most záruljon be, ne a folyamat lebontásakor (D2D összeomlás).
+                settings_window::close();
+                flyout::close();
+                tooltip::hide();
                 with_app(|app| {
                     for icon in app.icons_mut() {
                         icon.remove(hwnd);

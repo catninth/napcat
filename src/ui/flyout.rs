@@ -87,6 +87,13 @@ thread_local! {
     static CLOSED_AT: Cell<u32> = const { Cell::new(0) };
 }
 
+/// Kilépéskor (lásd `settings_window::close`).
+pub unsafe fn close() {
+    if let Some(hwnd) = FLYOUT.with_borrow(|f| f.as_ref().map(|f| f.hwnd)) {
+        let _ = DestroyWindow(hwnd);
+    }
+}
+
 pub fn is_open() -> bool {
     FLYOUT.with_borrow(|f| f.is_some())
 }
