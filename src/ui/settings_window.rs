@@ -965,6 +965,11 @@ impl Ui<'_> {
 unsafe fn paint(w: &mut Window) -> Result<()> {
     let mut rc = RECT::default();
     GetClientRect(w.hwnd, &mut rc)?;
+    // Kis méretben (tálcagombbal) a kliensterület 0×0: nincs mit rajzolni, és a görgetősáv
+    // számítása negatív magassággal pánikolna.
+    if IsIconic(w.hwnd).as_bool() || rc.right <= rc.left || rc.bottom <= rc.top {
+        return Ok(());
+    }
     let size = D2D_SIZE_U { width: (rc.right - rc.left) as u32, height: (rc.bottom - rc.top) as u32 };
     if w.rt.is_none() {
         // Szoftveres megjelenítés: a kis felülethez nem kell GPU, és így nem töltődik be a videókártya-
@@ -1156,7 +1161,7 @@ fn max_scroll(w: &Window) -> f32 {
 fn scrollbar(w: &Window) -> Option<(D2D_RECT_F, D2D_RECT_F)> {
     let (cw, ch) = (client_w(w), client_h(w));
     let max = max_scroll(w);
-    if max < 1.0 {
+    if max < 1.0 || ch < 48.0 {
         return None;
     }
     let track = rect(cw - 14.0, 4.0, 12.0, ch - 8.0);
