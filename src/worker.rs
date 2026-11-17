@@ -29,6 +29,8 @@ use crate::model::DeviceState;
 use crate::updater;
 use crate::providers::bt_pnp::BtPnp;
 use crate::providers::compx::Compx;
+use crate::providers::asus_rog::AsusRog;
+use crate::providers::hyperx::HyperX;
 use crate::providers::mchose::Mchose;
 use crate::providers::custom::Custom;
 use crate::providers::logitech_hidpp::LogitechHidpp;
@@ -157,6 +159,8 @@ unsafe fn run(hwnd: HWND, tx: Sender<DeviceState>) {
         Box::new(Compx::default()),
         Box::new(Mchose::default()),
         Box::new(SteelSeries::default()),
+        Box::new(HyperX::default()),
+        Box::new(AsusRog::default()),
         Box::new(Rk::default()),
         Box::new(Custom),
     ];

@@ -72,6 +72,8 @@ capture details.
 | Bluetooth battery (Windows battery property) | done, untested on hardware |
 | SteelSeries headsets (Arctis Nova 7 / 7 Gen 2 / 7X / 7P, Nova 5, Nova 3P/3X Wireless, Nova Pro Wireless, Arctis 7+, Arctis 1/7/9, Pro Wireless, GameBuds) | done, untested on hardware |
 | SteelSeries mice (Aerox 3/5/9 Wireless, Prime Wireless, Prime Mini Wireless, Rival 3 Wireless, Rival 650; cable and receiver) | done, untested on hardware |
+| HyperX headsets (Cloud III Wireless, Cloud III S Wireless, Cloud II Wireless, Cloud Alpha 2 Wireless) | done, untested on hardware |
+| ASUS ROG Omni Receiver (keyboard and mouse on one receiver: Strix Scope II 96 Wireless, Azoth, Falchion RX LP, Harpe Ace, Keris II Ace and more) | done, untested on hardware |
 | Other headsets, Razer, BLE GATT | planned |
 
 ## Building
